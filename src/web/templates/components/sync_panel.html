@@ -1,0 +1,36 @@
+<!-- src/web/templates/components/sync_panel.html -->
+{% from "components/icon.html" import icon %}
+{# Единая форма dashboard/settings; открытые параметры сохраняются только через operator API. #}
+<section class="sync-panel panel" aria-labelledby="sync-title" data-sync-panel>
+  <div class="panel__head"><div class="panel__title">{{ icon('layers') }}<div><h2 id="sync-title">Справочник номенклатуры</h2><p>Импорт, обновление и индексация номенклатуры 1С</p></div></div><div class="panel__actions"><button class="button button--outline" type="button" data-sync-now disabled>{{ icon('refresh') }}Обновить сейчас</button><a class="button" data-sync-report aria-disabled="true">{{ icon('download') }}Скачать отчёт</a></div></div>
+  <p class="sync-panel__access" data-sync-access>Проверка операторских полномочий…</p>
+  <form class="sync-form" data-sync-form>
+    <label class="switch"><input class="switch__input" type="checkbox" role="switch" name="enabled" data-sync-enabled disabled><span>Автоматически обновлять справочник номенклатуры</span></label>
+    <div class="sync-form__fields">
+      <label>Ежедневное время обновления (UTC) <span class="form-required" aria-hidden="true">*</span><input class="input" type="time" name="time_utc" required data-sync-time disabled><small class="field-error" data-time-error></small></label>
+      <label>Источник данных<select class="input" name="source_type" data-sync-source disabled><option value="local_xml">Локальный XML</option><option value="http_onec">HTTP API 1С</option></select></label>
+      <label>Адрес API 1С<div class="sync-form__url"><input class="input" type="url" name="url" placeholder="Ожидается URL из контракта 1С" data-sync-url disabled><a class="icon-button" href="/settings#onec-connection" data-source-link aria-label="Открыть настройки или проверенный адрес 1С">{{ icon('external') }}</a></div></label>
+    </div>
+    <details class="sync-form__advanced" id="onec-connection"><summary>HTTP-контракт и серверные credentials 1С</summary><p>До утверждения контракта HTTP-синхронизация не включается. Секреты задаются оператором на сервере; здесь только ссылка на них.</p><div class="sync-form__fields">
+      <label>Метод<select class="input" name="method" disabled><option value="GET">GET полного XML</option></select></label>
+      <label>Авторизация<select class="input" name="auth_type" disabled><option value="none">Не требуется</option><option value="bearer">Bearer (на сервере)</option><option value="basic">Basic (на сервере)</option></select></label>
+      <label>Credential reference<input class="input" name="credential_ref" value="onec_catalog" readonly disabled></label>
+      <label>Формат<input class="input" name="expected_format" value="xml" readonly disabled></label>
+      <label>Режим<input class="input" name="export_mode" value="full" readonly disabled></label>
+      <label>Timeout, секунд<input class="input" name="timeout_seconds" type="number" min="1" max="300" disabled></label>
+      <label>Максимум байт<input class="input" name="max_bytes" type="number" min="1024" disabled></label>
+      <label>Заголовок полной выгрузки<input class="input" name="completion_header" placeholder="Из утверждённого контракта" disabled></label>
+      <label>Ожидаемое значение<input class="input" name="completion_value" placeholder="Из утверждённого контракта" disabled></label>
+    </div><p class="sync-form__secret" data-secret-state>Credentials не выдаются браузеру.</p></details>
+    <p class="sync-form__info" data-sync-description>{{ icon('info') }}<span>Загрузка действующего расписания…</span></p>
+    <div class="sync-form__footer"><span role="status" data-sync-save-status></span><div class="panel__actions"><button class="button" type="button" data-test-source disabled>Проверить подключение</button><button class="button button--primary" type="submit" data-save-sync disabled>Сохранить настройки</button></div></div>
+    <p class="notice notice--error" role="alert" data-sync-error hidden></p>
+  </form>
+  <div class="sync-progress" data-sync-progress hidden><label for="catalog-progress" data-sync-stage>Подготовка импорта</label><progress id="catalog-progress" data-sync-meter></progress><p data-sync-counts></p></div>
+  <div class="sync-meta">
+    <article>{{ icon('check') }}<div><small>Последнее успешное обновление</small><strong data-sync-success>—</strong><span data-sync-attempt>Последняя попытка: нет данных</span></div></article>
+    <article>{{ icon('layers') }}<div><small>Обработано записей</small><strong data-sync-processed>—</strong><span data-sync-changes>Нет отчёта о запуске</span></div></article>
+    <article>{{ icon('database') }}<div><small>Версия справочника</small><strong data-sync-version>—</strong><span data-sync-hash>SHA-256: —</span></div></article>
+    <article>{{ icon('calendar') }}<div><small>Следующий запуск</small><strong data-sync-next>—</strong><span>Время расписания — UTC</span></div></article>
+  </div>
+</section>

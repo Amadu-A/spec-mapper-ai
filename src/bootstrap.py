@@ -11,14 +11,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.application.catalog import PruneCatalogUseCase, SynchronizeCatalogUseCase
+from src.application.catalog_management import CatalogManagement
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
 from src.config import Settings
 from src.domain.embedding import compatible_embedding
 from src.infrastructure.broker import RabbitBroker
+from src.infrastructure.catalog_sources import CatalogSourceFactory
 from src.infrastructure.http_clients import HttpExtractionSource, SharedEmbeddings
+from src.infrastructure.integration_status import IntegrationProbes
+from src.infrastructure.operator_access import SqlOperatorAccess
 from src.infrastructure.qdrant import QdrantIndex
 from src.infrastructure.repositories import SqlCatalog, SqlJobs
+from src.infrastructure.sync_repository import SqlSyncRepository
 from src.infrastructure.xml_catalog import XmlCatalogSource
 
 
@@ -37,6 +42,11 @@ class Container:
     embeddings: SharedEmbeddings
     index: QdrantIndex
     pruner: PruneCatalogUseCase
+    sync_repository: SqlSyncRepository
+    catalog_sources: CatalogSourceFactory
+    sync: CatalogManagement
+    operator_access: SqlOperatorAccess
+    integration_probes: IntegrationProbes
 
     async def ready(self) -> dict:
         """Проверяет реальные зависимости; недоступный shared endpoint никогда не
@@ -114,6 +124,9 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
     synchronizer = SynchronizeCatalogUseCase(
         source, catalog, embeddings, index, settings.embedding_batch_size
     )
+    sources = CatalogSourceFactory(settings, http, source)
+    sync_repository = SqlSyncRepository(sessions, settings, jobs)
+    sync = CatalogManagement(sync_repository, sources, settings, lambda: jobs.clock())
     processor = JobProcessor(
         jobs,
         catalog,
@@ -122,6 +135,8 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         index,
         synchronizer,
         settings,
+        sources,
+        sync,
     )
     return Container(
         settings,
@@ -135,4 +150,9 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         embeddings,
         index,
         PruneCatalogUseCase(catalog, index),
+        sync_repository,
+        sources,
+        sync,
+        SqlOperatorAccess(sessions, settings, lambda: jobs.clock()),
+        IntegrationProbes(http, settings),
     )

@@ -60,3 +60,14 @@ Approval не продлевает TTL. Предварительные JSON/Exce
 Его `approval` содержит owner, время, revision и версию каталога; строки содержат
 исходную пятёрку, стабильный `index`, `onec` (либо null), признаки `matching`.
 Полный пример и последовательность интеграции: [INTEGRATION_1C.md](INTEGRATION_1C.md).
+
+## Дополнение V2: dashboard и управление синхронизацией
+
+Прежние mapping/approval/import-json контракты сохранены. Новые GET/PUT sync-settings,
+connection-test, import-history/report, dashboard summary/jobs и operator session/audit/jobs
+описаны в [контрактах управления](DASHBOARD_AND_SYNC.md#api-управления-и-отчёты)
+и актуальном OpenAPI. Cookie управления — OperatorSession, CSRF — X-Operator-CSRF;
+серверный CatalogKey совместим. Обычный IntegrationKey не повышает права.
+`POST catalog/imports` без тела по-прежнему импортирует локальный XML;
+необязательное тело `{"source_type":"local_xml"}` либо http_onec выбирает GUI source.
+Новые management настройки revision-CAS; 409 требует перечитать конфигурацию.

@@ -68,6 +68,7 @@ def owner(request: Request, key: Annotated[str | None, Security(integration_key)
                 matched = name
         if matched is None:
             raise MapperError("unauthorized", "Неверный API-ключ", 401)
+        request.state.integration_name = matched
         return "api:" + matched
     session_id = read_session(request)
     if session_id is None:

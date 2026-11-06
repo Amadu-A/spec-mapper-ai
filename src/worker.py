@@ -15,29 +15,24 @@ from src.observability import configure_logging
 
 async def maintenance(container) -> None:
     """Повторяет outbox после сбоев, очищает только задания и планирует разрешённую daily sync."""
-    settings = container.settings
     last_cleanup = 0
     last_prune = 0
     while True:
         try:
+            await container.sync_repository.touch("worker")
+            try:
+                await container.sync.tick()
+            except Exception:
+                # Ошибка источника/настройки не останавливает доставку mapping и recovery outbox.
+                logging.getLogger(__name__).warning("catalog_schedule_retry")
             for job_id in await container.jobs.pending():
                 await container.broker.publish(job_id)
                 await container.jobs.dispatched(job_id)
             if time() - last_cleanup >= 30:
                 await container.jobs.cleanup()
                 last_cleanup = time()
-                if settings.catalog_daily_sync:
-                    status = await container.catalog.status()
-                    if (
-                        time() - (status.get("last_successful_sync") or 0)
-                        >= settings.catalog_sync_seconds
-                    ):
-                        await container.jobs.create(
-                            "system",
-                            f"daily:{int(time() // settings.catalog_sync_seconds)}",
-                            {},
-                            "catalog",
-                        )
+                await container.sync_repository.cleanup()
+                await container.catalog_sources.cleanup()
             if time() - last_prune >= 3600:
                 last_prune = time()
                 await container.pruner.execute()

@@ -8,9 +8,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 COPY src ./src
+COPY docs/INTEGRATION_1C.md docs/INTEGRATION_1C.md
 COPY alembic ./alembic
 COPY alembic.ini .env.example ./
-RUN useradd --create-home --uid 10001 mapper
+RUN useradd --create-home --uid 10001 mapper && mkdir /app/staging && chown mapper:mapper /app/staging && chmod 700 /app/staging
 USER mapper
 EXPOSE 8000
 CMD ["/app/.venv/bin/uvicorn", "src.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-proxy-headers"]

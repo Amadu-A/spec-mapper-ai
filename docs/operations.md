@@ -165,3 +165,13 @@ credentials в общий журнал. Ключи onec/telegram передаю�
 разработчикам защищённым каналом; upstream key берётся из конфигурации extracting.
 Если пароль существующего RabbitMQ user не совпадает, bootstrap останавливается:
 восстановить согласованное значение RABBITMQ_PASSWORD, не сбрасывать shared пароль.
+
+## Главная и синхронизация V2
+
+Обновление использует прежний `bash scripts/up.sh`, порт 8087 и существующие volumes.
+Перед обновлением дождаться текущего импорта; additive 0003 не трогает снимки и approvals.
+Новый собственный volume catalog_staging нужен для HTTP загрузок; data остаётся read-only.
+Bootstrap env-флаг применяется один раз; далее расписание хранится в PostgreSQL.
+Не выполнять down -v, prune или downgrade ради rollback интерфейса.
+[Настройки и доступ оператора](DASHBOARD_AND_SYNC.md),
+[проверка, deploy и rollback](RELEASE_V2.md).

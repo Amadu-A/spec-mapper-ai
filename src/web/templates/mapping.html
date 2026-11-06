@@ -28,7 +28,5 @@
   </section>
   <div class="pipeline" role="status" data-pipeline>Ожидание спецификации. Автоматический подбор не означает проверку человеком.</div>
 </section>
-<section data-view="jobs" hidden><div class="heading"><div><h1>Задания текущей сессии</h1><p>После истечения срока хранения задания удаляются автоматически</p></div><button class="button" type="button" data-refresh-jobs>↻ Обновить</button></div><div class="workspace" data-jobs></div></section>
-<section data-view="catalog" hidden><div class="heading"><div><h1>Справочник номенклатуры 1С</h1><p>Активные позиции из XML · собственные PostgreSQL и Qdrant</p></div></div><section class="workspace workspace--padded"><p data-catalog-info>Проверка каталога…</p><ul class="notice notice--warning" data-catalog-warnings hidden></ul><label for="catalog-query">Поиск по имени, коду или артикулу</label><input class="input input--wide" id="catalog-query" type="search" placeholder="Например: клапан или 00-00034629" data-catalog-query><div data-catalog-items></div></section></section>
 {% include "selection.html" %}
 {% endblock %}

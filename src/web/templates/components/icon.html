@@ -1,0 +1,3 @@
+<!-- src/web/templates/components/icon.html -->
+{# Доступные декоративные SVG; имя задаётся только константами шаблонов. #}
+{% macro icon(name) -%}<svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg#{{ name }}"></use></svg>{%- endmacro %}

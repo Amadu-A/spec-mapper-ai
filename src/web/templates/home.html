@@ -1,0 +1,19 @@
+<!-- src/web/templates/home.html -->
+{% extends "base.html" %}
+{% from "components/icon.html" import icon %}
+{# Главная по render_v2; значения и права загружаются из реального backend. #}
+{% block content %}
+<div class="dashboard" data-dashboard>
+  <section class="kpi-grid" aria-label="Показатели сервиса">
+    <article class="kpi">{{ icon('layers') }}<div><h2>Номенклатура</h2><div class="kpi__value"><strong data-kpi="catalog">—</strong><span class="badge" data-catalog-current>Проверяется</span></div><p>Активных позиций</p></div></article>
+    <article class="kpi">{{ icon('jobs') }}<div><h2>Заданий сегодня</h2><strong data-kpi="jobs">—</strong><p data-kpi-total>UTC-сутки · загрузка…</p></div></article>
+    <article class="kpi">{{ icon('check') }}<div><h2>Сопоставлено автоматически</h2><strong data-kpi="automatic">—</strong><p data-kpi-auto-count>Нет данных</p><small data-kpi-delta>Нет данных за две недели</small></div></article>
+    <article class="kpi">{{ icon('review') }}<div><h2>Требует проверки</h2><strong data-kpi="review">—</strong><p data-kpi-review-count>Нет данных</p></div></article>
+  </section>
+  <p class="dashboard__scope" data-metrics-scope>Проверка области статистики…</p>
+  <div class="dashboard__grid"><div class="dashboard__main">{% include "components/sync_panel.html" %}{% include "components/jobs_table.html" %}</div><aside class="dashboard__aside">
+    <section class="panel integrations-panel" aria-labelledby="integrations-title"><div class="panel__head panel__title">{{ icon('link') }}<h2 id="integrations-title">Статус интеграций</h2></div><ul class="integration-list"><li><span>{{ icon('link') }}spec-extracting-ai</span><span class="badge" data-integration="extracting">Проверяется</span></li><li><span>{{ icon('jobs') }}HTTP API 1С</span><span class="badge" data-integration="onec">Проверяется</span></li><li><span>{{ icon('telegram') }}Telegram-бот</span><span class="badge" data-integration="telegram">Проверяется</span></li></ul><p class="panel__hint" data-telegram-seen>Telegram — входящий API-клиент.</p></section>
+    <section class="panel timeline-panel" aria-labelledby="timeline-title"><div class="panel__head panel__title">{{ icon('file') }}<h2 id="timeline-title">Журнал обновлений</h2></div><ol class="timeline" data-timeline><li>Загрузка журнала…</li></ol><div class="panel__foot"><a href="/events">Весь журнал →</a></div></section>
+  </aside></div>
+</div>
+{% endblock %}

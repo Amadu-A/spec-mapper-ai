@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from io import BytesIO
 
 from openpyxl import Workbook
@@ -104,6 +105,47 @@ def export_xlsx(job: dict) -> bytes:
                 cell.data_type = "s"
             cells.append(cell)
         sheet.append(cells)
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def export_catalog_xlsx(report: dict) -> bytes:
+    """Выгружает только технические реквизиты run и этапы, без строк номенклатуры/документов."""
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("Импорт каталога")
+    sheet.append(["Параметр", "Значение"])
+    for key, value in report.items():
+        if key == "events":
+            continue
+        cell = WriteOnlyCell(
+            sheet,
+            value=json.dumps(value, ensure_ascii=False)
+            if isinstance(value, (dict, list))
+            else str(value)
+            if value is not None
+            else "",
+        )
+        cell.data_type = "s"
+        sheet.append([key, cell])
+    events = workbook.create_sheet("Этапы UTC")
+    events.append(["Unix UTC", "Этап", "Технические сведения"])
+    for event in report.get("events", []):
+        values = [
+            event["at"],
+            event["stage"],
+            json.dumps(
+                {key: value for key, value in event.items() if key not in {"at", "stage"}},
+                ensure_ascii=False,
+            ),
+        ]
+        cells = []
+        for value in values:
+            cell = WriteOnlyCell(events, value=value)
+            if isinstance(value, str):
+                cell.data_type = "s"
+            cells.append(cell)
+        events.append(cells)
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()

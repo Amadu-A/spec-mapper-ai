@@ -172,6 +172,7 @@ async def enqueue_catalog(wait: bool = False) -> None:
     """Ожидает административный импорт по его отдельному deadline, показывая безопасные counts."""
     container = build_container(Settings())
     try:
+        active = await container.jobs.active_catalog()
         identity = await container.embeddings.identity()
         source = await XmlCatalogSource(
             container.settings.data_directory,
@@ -187,7 +188,7 @@ async def enqueue_catalog(wait: bool = False) -> None:
                 status.get("last_successful_sync"),
             ]
         )
-        job = await container.jobs.create("system", key, {}, "catalog")
+        job = active or await container.jobs.create("system", key, {}, "catalog")
         while job["state"] == "failed":
             key = "retry:" + digest([key, job["id"]])
             job = await container.jobs.create("system", key, {}, "catalog")
@@ -197,7 +198,7 @@ async def enqueue_catalog(wait: bool = False) -> None:
         last_progress = None
         if wait:
             while time() < job["expires_at"]:
-                current = await container.jobs.get(job["id"], "system")
+                current = await container.jobs.get(job["id"], job["owner"])
                 progress = current["data"].get("catalog_progress", {})
                 bucket = (current["stage"], progress.get("processed", 0) // 1000)
                 if bucket != last_progress:
@@ -227,6 +228,21 @@ async def enqueue_catalog(wait: bool = False) -> None:
         await container.close()
 
 
+async def operator_ticket() -> None:
+    """По явной SSH CLI-команде выдаёт одноразовый код, не раскрывая CATALOG_ADMIN_KEY."""
+    container = build_container(Settings())
+    try:
+        ticket = await container.operator_access.issue()
+        print("Одноразовый код оператора (HTTPS или localhost SSH-туннель):")
+        print(ticket)
+        print(
+            f"Срок кода: {container.settings.operator_ticket_seconds} секунд; "
+            "повторное использование запрещено."
+        )
+    finally:
+        await container.close()
+
+
 def main() -> None:
     """Выполняет одну операторскую операцию и выдаёт только безопасную предметную диагностику."""
     parser = argparse.ArgumentParser(description="Операции spec-mapper-ai")
@@ -239,6 +255,7 @@ def main() -> None:
             "import-catalog",
             "check-live",
             "shared-health",
+            "operator-ticket",
         ],
     )
     parser.add_argument("--wait", action="store_true", help="Дождаться завершения импорта")
@@ -254,6 +271,8 @@ def main() -> None:
             check_live_stack()
         elif args.command == "shared-health":
             asyncio.run(shared_health())
+        elif args.command == "operator-ticket":
+            asyncio.run(operator_ticket())
         else:
             asyncio.run(enqueue_catalog(args.wait))
     except MapperError as exc:

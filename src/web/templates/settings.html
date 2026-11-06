@@ -1,0 +1,4 @@
+<!-- src/web/templates/settings.html -->
+{% extends "base.html" %}
+{# Настройки используют ту же форму и application API, что главная. #}
+{% block content %}{% include "components/sync_panel.html" %}<p class="panel__hint">Расписание хранится в PostgreSQL и действует независимо от открытой страницы. Смена настройки сама по себе не запускает обновление.</p>{% endblock %}

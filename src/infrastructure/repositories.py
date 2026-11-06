@@ -22,6 +22,7 @@ from src.infrastructure.database import (
     JobRow,
     VectorCacheRow,
 )
+from src.infrastructure.telemetry import add_metrics, metric_delta, record_catalog
 
 
 def job_dict(row: JobRow) -> dict:
@@ -45,6 +46,31 @@ def job_dict(row: JobRow) -> dict:
     }
 
 
+def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float) -> JobRow:
+    """Создаёт одинаковый durable job для API, CLI и scheduler в транзакции вызывающего кода."""
+    return JobRow(
+        id=str(uuid4()),
+        owner=owner,
+        idempotency_hash=digest(key),
+        request_hash=digest({"kind": kind, "payload": payload}),
+        kind=kind,
+        created_at=now,
+        expires_at=now
+        + (
+            settings.catalog_import_timeout_seconds
+            if kind == "catalog"
+            else settings.draft_ttl_seconds
+        ),
+        data={
+            "source_job_id": payload.get("source_job_id"),
+            "source": payload.get("document"),
+            "rows": [],
+            "ingestion": "import-json" if "document" in payload else "extracting",
+            **({"catalog_sync": payload["catalog_sync"]} if "catalog_sync" in payload else {}),
+        },
+    )
+
+
 class SqlJobs:
     """Хранит durable состояние, outbox, optimistic revision и fencing внутри транзакций."""
 
@@ -57,27 +83,18 @@ class SqlJobs:
         key_hash, request_hash = digest(key), digest({"kind": kind, "payload": payload})
         try:
             async with self.sessions.begin() as session:
-                row = JobRow(
-                    id=str(uuid4()),
-                    owner=owner,
-                    idempotency_hash=key_hash,
-                    request_hash=request_hash,
-                    kind=kind,
-                    created_at=self.clock(),
-                    expires_at=self.clock()
-                    + (
-                        self.settings.catalog_import_timeout_seconds
-                        if kind == "catalog"
-                        else self.settings.draft_ttl_seconds
-                    ),
-                    data={
-                        "source_job_id": payload.get("source_job_id"),
-                        "source": payload.get("document"),
-                        "rows": [],
-                    },
-                )
+                row = new_job(owner, key, payload, kind, self.settings, self.clock())
+                delta = None
+                if kind == "mapping":
+                    row.data, delta = metric_delta(row, row.data, "queued")
                 session.add(row)
                 await session.flush()
+                if delta is not None:
+                    await add_metrics(session, row, delta)
+                else:
+                    await record_catalog(
+                        session, row, {"state": "queued", "stage": "queued"}, self.clock()
+                    )
                 result = job_dict(row)
             return result
         except IntegrityError:
@@ -121,6 +138,21 @@ class SqlJobs:
             )
             return [job_dict(row) for row in rows]
 
+    async def active_catalog(self) -> dict | None:
+        """CLI присоединяется к уже запущенному импорту, сохраняя его staging и outbox."""
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(JobRow)
+                .where(
+                    JobRow.kind == "catalog",
+                    JobRow.state.not_in(TERMINAL),
+                    JobRow.expires_at > self.clock(),
+                )
+                .order_by(JobRow.created_at)
+                .limit(1)
+            )
+            return job_dict(row) if row else None
+
     async def claim(self, job_id: str) -> dict | None:
         """CAS-обновление выдаёт единственный lease даже при нескольких доставках RabbitMQ."""
         now = self.clock()
@@ -152,6 +184,12 @@ class SqlJobs:
         elif changes.get("state") == "queued":
             changes.update(lease_until=None, lease_token=None, dispatched_at=None)
         async with self.sessions.begin() as session:
+            row = await session.get(JobRow, job_id)
+            delta = None
+            if row is not None and row.kind == "mapping" and changes.get("state") in TERMINAL:
+                changes["data"], delta = metric_delta(
+                    row, changes.get("data", row.data), changes["state"]
+                )
             result = await session.execute(
                 update(JobRow)
                 .where(
@@ -163,6 +201,10 @@ class SqlJobs:
                 )
                 .values(**changes)
             )
+            if result.rowcount == 1 and row is not None:
+                if delta is not None:
+                    await add_metrics(session, row, delta)
+                await record_catalog(session, row, changes, now)
             return result.rowcount == 1
 
     async def heartbeat(self, job_id: str, token: str) -> bool:
@@ -234,6 +276,7 @@ class SqlJobs:
                 )
                 else "complete"
             )
+            data, delta = metric_delta(row, data, state)
             changed = await session.execute(
                 update(JobRow)
                 .where(
@@ -245,6 +288,7 @@ class SqlJobs:
             )
             if changed.rowcount != 1:
                 raise MapperError("revision_conflict", "Результат изменён другим запросом", 409)
+            await add_metrics(session, row, delta)
         return await self.get(job_id, owner)
 
     async def cleanup(self) -> None:

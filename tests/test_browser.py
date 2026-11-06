@@ -58,8 +58,8 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
             context = await browser.new_context(viewport={"width": 1600, "height": 1100})
             page = await context.new_page()
             errors = []
-            page.on("pageerror", lambda error: errors.append(str(error)))
-            await page.goto(f"http://127.0.0.1:{port}/")
+            page.on("pageerror", lambda error: errors.append(error.stack))
+            await page.goto(f"http://127.0.0.1:{port}/mapping")
             await expect(page.locator("[data-catalog-date]")).to_contain_text("Каталог:")
             import json
 

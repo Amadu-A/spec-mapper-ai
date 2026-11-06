@@ -173,8 +173,17 @@ async def system(tmp_path, settings, source):
     await sync.execute(progress)
     extraction = FakeExtraction(source)
     container.processor = JobProcessor(
-        container.jobs, container.catalog, extraction, embeddings, index, sync, settings
+        container.jobs,
+        container.catalog,
+        extraction,
+        embeddings,
+        index,
+        sync,
+        settings,
+        catalog_sources=container.catalog_sources,
+        catalog_management=container.sync,
     )
+    container.catalog_sources.local = catalog_source
     container.embeddings, container.index = embeddings, index
     container.pruner = PruneCatalogUseCase(container.catalog, index)
     yield container, item, sync, catalog_source, extraction

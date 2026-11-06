@@ -31,9 +31,13 @@ class JobProcessor:
         index: VectorIndex,
         synchronizer,
         settings,
+        catalog_sources=None,
+        catalog_management=None,
     ) -> None:
         """Принимает все порты через composition root без создания клиентов в use-case."""
         self.jobs, self.catalog, self.extraction = jobs, catalog, extraction
+        self.catalog_sources = catalog_sources
+        self.catalog_management = catalog_management
         self.embeddings, self.index, self.synchronizer, self.settings = (
             embeddings,
             index,
@@ -57,6 +61,8 @@ class JobProcessor:
         async def progress(stage: str, **details) -> None:
             """Отражает текущий этап без пользовательского payload в логах и broker message."""
             if details:
+                if "downloaded_bytes" in details:
+                    job["data"]["downloaded_bytes"] = details["downloaded_bytes"]
                 job["data"].update(catalog_progress=details)
                 if details.get("catalog_version"):
                     job["data"]["catalog_version"] = details["catalog_version"]
@@ -70,11 +76,28 @@ class JobProcessor:
                 await checkpoint(state="failed", stage="failed", error_code="attempts_exhausted")
                 return
             if job["kind"] == "catalog":
-                status = await self.synchronizer.execute(progress)
+                config = job["data"].get("catalog_sync", {})
+                if self.catalog_sources and config.get("source_type") == "http_onec":
+                    status = await self.synchronizer.execute(
+                        progress, source_override=self.catalog_sources.source(config, progress)
+                    )
+                    if self.catalog_management:
+                        await self.catalog_management.record_success(config, status)
+                else:
+                    status = await self.synchronizer.execute(progress)
                 await checkpoint(
                     state="complete",
                     stage="complete",
-                    data={**job["data"], "catalog_status": status},
+                    data={
+                        **job["data"],
+                        "catalog_status": status,
+                        "catalog_progress": {
+                            **job["data"].get("catalog_progress", {}),
+                            "processed": status["count"],
+                            "total": status["count"],
+                        },
+                    },
+                    error_code=None,
                 )
                 return
             await self._match(job, checkpoint, progress)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -16,6 +16,7 @@ from src.bootstrap import Container, build_container
 from src.config import Settings
 from src.domain.models import MapperError
 from src.observability import configure_logging
+from src.presentation.dashboard_routes import router as dashboard_router
 from src.presentation.middleware import LimitsMiddleware
 from src.presentation.routes import router
 from src.presentation.security import COOKIE, new_session
@@ -60,6 +61,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=ROOT / "web" / "templates")
     app.mount("/static", StaticFiles(directory=ROOT / "web" / "static"), name="static")
     app.include_router(router)
+    app.include_router(dashboard_router)
 
     @app.get("/docs", include_in_schema=False)
     async def api_docs(request: Request):
@@ -104,11 +106,36 @@ def create_app(container: Container | None = None) -> FastAPI:
         status = await container.ready()
         return JSONResponse(status, 200 if status["ready"] else 503)
 
-    @app.get("/")
-    async def index(request: Request):
-        """Отображает инженерный интерфейс с отдельной HttpOnly cookie без регистрации."""
+    async def web_page(request: Request):
+        """Сохраняет owner между настоящими страницами и прежними ссылками на job."""
         _, cookie = new_session(request)
-        response = templates.TemplateResponse(request=request, name="mapping.html", context={})
+        view = request.url.path.strip("/") or "home"
+        titles = {
+            "home": "Главная",
+            "mapping": "Сопоставление",
+            "jobs": "Задания",
+            "catalog": "Справочник номенклатуры",
+            "settings": "Настройки",
+            "integrations": "API и интеграция",
+            "events": "Журнал событий",
+            "operator": "Доступ оператора",
+            "help": "Справка",
+        }
+        if view == "home" and (
+            "job" in request.query_params or "source_job_id" in request.query_params
+        ):
+            response = RedirectResponse("/mapping?" + request.url.query, status_code=307)
+        else:
+            response = templates.TemplateResponse(
+                request=request,
+                name=view + ".html",
+                context={
+                    "view": view,
+                    "title": titles[view],
+                    "app_version": app.version,
+                    "subtitle": "Состояние сервиса, справочника и заданий на сопоставление",
+                },
+            )
         response.set_cookie(
             COOKIE,
             cookie,
@@ -118,5 +145,27 @@ def create_app(container: Container | None = None) -> FastAPI:
             max_age=7200,
         )
         return response
+
+    for path in (
+        "/",
+        "/mapping",
+        "/jobs",
+        "/catalog",
+        "/settings",
+        "/integrations",
+        "/events",
+        "/operator",
+        "/help",
+    ):
+        app.add_api_route(path, web_page, methods=["GET"], include_in_schema=False)
+
+    @app.get("/integration-guide", include_in_schema=False)
+    async def integration_guide():
+        """Отдаёт версионируемую инструкцию интеграции без секретов сервера."""
+        return FileResponse(
+            ROOT.parent / "docs" / "INTEGRATION_1C.md",
+            media_type="text/markdown",
+            filename="INTEGRATION_1C.md",
+        )
 
     return app

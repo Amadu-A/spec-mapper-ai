@@ -83,3 +83,14 @@
 Quality gates: Windows `ops/check-quality.ps1` (Ruff, pytest, architecture, JS/E2E если применимо, `git diff --check`), Linux `bash scripts/test.sh`, `bash scripts/up.sh` и реальные runtime проверки. В отчёте: файлы, состояния, тесты, ограничения, точные команды проверки, явный список `git add <paths>`, команды commit/push только для исполнения владельцем. Не изменять shared-stack и не делать destructive actions.
 
 Definition of Done: после clone и одного `bash scripts/up.sh` сервис запускается на уже подготовленном сервере; импортирует реальный XML в PostgreSQL/Qdrant через shared embedding; по `source_job_id` получает готовый JSON; возвращает честное Top-K сопоставление всех строк, предоставляет поиск/перевыбор/сохранение и корректные экспорты; задания устойчивы к restart и соблюдают TTL; соседи по shared-инфраструктуре не затронуты.
+
+## 9. Главная и управление каталогом (дополнение V2)
+
+Главная следует предоставленному `renders/render_v2.png`; прежняя таблица — `/mapping`,
+старые deep links сохраняют owner. Оператор без регистрации получает короткую сессию
+через одноразовый SSH CLI ticket и HTTPS/localhost туннель; API-ключи в браузер не выдаются.
+Оператор видит только общую мета-статистику чужих jobs. После bootstrap расписание
+живёт в PostgreSQL: OFF/15:00 UTC по умолчанию, один слот дата+источник, безопасный catch-up.
+Локальный XML и HTTP full XML используют один pipeline; неизвестный контракт 1С
+не разрешает HTTP publication. Новые миграции additive, staging/volumes не сбрасываются.
+Точный workflow, безопасность, метрики и API: [DASHBOARD_AND_SYNC](docs/DASHBOARD_AND_SYNC.md).

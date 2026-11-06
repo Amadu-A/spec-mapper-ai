@@ -88,3 +88,82 @@ class VectorCacheRow(Base):
     __tablename__ = "catalog_vectors"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     vector: Mapped[list] = mapped_column(JSON)
+
+
+class SyncSettingsRow(Base):
+    """Постоянный singleton GUI-настроек; bootstrap env применяется только один раз."""
+
+    __tablename__ = "catalog_sync_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    initialized: Mapped[bool] = mapped_column(Boolean, default=False)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    next_run_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[float] = mapped_column(Float, default=0)
+    updated_by: Mapped[str] = mapped_column(String(80), default="bootstrap")
+    probe_result: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics_started_at: Mapped[float] = mapped_column(Float, default=0)
+
+
+class SyncRunRow(Base):
+    """Долговечный технический запуск; не зависит от TTL job и не содержит XML/наименования."""
+
+    __tablename__ = "catalog_sync_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), index=True)
+    owner: Mapped[str] = mapped_column(String(80))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_identity: Mapped[str] = mapped_column(String(64))
+    initiator: Mapped[str] = mapped_column(String(32))
+    schedule_key: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, index=True)
+    started_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    finished_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    state: Mapped[str] = mapped_column(String(32), default="queued")
+    stage: Mapped[str] = mapped_column(String(32), default="queued")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    events: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class DailyMetricRow(Base):
+    """Дневные счётчики по хешу scope без job ID, текстов, кандидатов и иных документов."""
+
+    __tablename__ = "dashboard_daily_metrics"
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), primary_key=True)
+    jobs: Mapped[int] = mapped_column(Integer, default=0)
+    positions: Mapped[int] = mapped_column(Integer, default=0)
+    matched: Mapped[int] = mapped_column(Integer, default=0)
+    manual: Mapped[int] = mapped_column(Integer, default=0)
+    review: Mapped[int] = mapped_column(Integer, default=0)
+    unresolved: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ServiceActivityRow(Base):
+    """Последний heartbeat/успешный inbound запрос сервиса без значения credentials."""
+
+    __tablename__ = "service_activity"
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    last_seen: Mapped[float] = mapped_column(Float)
+
+
+class OperatorTicketRow(Base):
+    """Одноразовый CLI-ticket: в БД только hash, срок и факт использования."""
+
+    __tablename__ = "operator_tickets"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[float] = mapped_column(Float, index=True)
+    consumed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CatalogAuditRow(Base):
+    """Ограниченный технический аудит операторских действий без credential и документов."""
+
+    __tablename__ = "catalog_operator_audit"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    at: Mapped[float] = mapped_column(Float, index=True)
+    actor: Mapped[str] = mapped_column(String(80))
+    event: Mapped[str] = mapped_column(String(80))
+    details: Mapped[dict] = mapped_column(JSON, default=dict)

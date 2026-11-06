@@ -29,12 +29,21 @@ class SynchronizeCatalogUseCase:
         self.batch_size = batch_size
 
     @timed("catalog_synchronize")
-    async def execute(self, progress) -> dict:
+    async def execute(self, progress, source_override: CatalogSource | None = None) -> dict:
         """Восстанавливает совместимый staging; при отказе сохраняет прежний активный индекс."""
         try:
             async with self.catalog.lock():
-                await progress("reading_xml")
-                source = await self.source.read()
+                await progress("fetching" if source_override else "reading_xml")
+                if not source_override:
+                    await progress("validating")
+                source = await (source_override or self.source).read()
+                await progress(
+                    "validated",
+                    total=len(source.items),
+                    processed=0,
+                    source_hash=source.source_hash,
+                    statistics=source.statistics,
+                )
                 identity = await self.embeddings.identity()
                 previous = await self.catalog.status()
                 usable = (
@@ -56,12 +65,26 @@ class SynchronizeCatalogUseCase:
                     await self.catalog.update_stage(previous["version"], metadata)
                 if compatible and previous.get("source_hash") == source.source_hash:
                     await self.catalog.activate(previous["version"])
-                    return await self.catalog.status()
+                    return {
+                        **await self.catalog.status(),
+                        "run_statistics": {
+                            "added_count": 0,
+                            "changed_count": 0,
+                            "removed_count": 0,
+                            "unchanged_count": len(source.items),
+                            "embedded_count": 0,
+                            "indexed_count": 0,
+                            "reused_count": len(source.items),
+                            "counts_complete": True,
+                        },
+                    }
                 saved = await self.catalog.resumable(source.source_hash, identity)
                 if saved:
                     metadata = dict(saved)
                     version = metadata.pop("version")
                     metadata.setdefault("embedding_identity", identity)
+                    metadata.setdefault("counts_complete", "added_count" in metadata)
+                    metadata.setdefault("comparison_version", previous.get("version"))
                 else:
                     version = str(uuid4())
                     incremental = bool(compatible)
@@ -80,6 +103,7 @@ class SynchronizeCatalogUseCase:
                         "statistics": source.statistics,
                         "mode": "incremental" if incremental else "full",
                         "base_version": previous["version"] if incremental else None,
+                        "comparison_version": previous.get("version"),
                         "base_collection": previous["collection"] if incremental else None,
                         "resume_offset": 0,
                         "initialized": False,
@@ -87,8 +111,19 @@ class SynchronizeCatalogUseCase:
                         "embedded_count": 0,
                         "indexed_count": 0,
                         "removed_count": 0,
+                        "added_count": 0,
+                        "changed_count": 0,
+                        "unchanged_count": 0,
+                        "counts_complete": True,
                         "updated_at": time(),
                     }
+                    await progress(
+                        "staging",
+                        catalog_version=version,
+                        processed=0,
+                        total=len(source.items),
+                        statistics=source.statistics,
+                    )
                     await self.catalog.stage(version, source.items, metadata)
                 await progress(
                     "preparing_index",
@@ -128,7 +163,22 @@ class SynchronizeCatalogUseCase:
                     except BaseException:
                         await self.index.restore(old_collection)
                         raise
-                return await self.catalog.status()
+                return {
+                    **await self.catalog.status(),
+                    "run_statistics": {
+                        key: metadata.get(key, 0)
+                        for key in (
+                            "added_count",
+                            "changed_count",
+                            "removed_count",
+                            "unchanged_count",
+                            "embedded_count",
+                            "indexed_count",
+                            "reused_count",
+                            "counts_complete",
+                        )
+                    },
+                }
         except MapperError as exc:
             await self.catalog.sync_error(exc.code)
             raise
@@ -138,13 +188,15 @@ class SynchronizeCatalogUseCase:
         collection = metadata["collection"]
         if await self.index.exists(collection):
             await self.index.remove(collection)
+        removed = []
+        if metadata.get("comparison_version"):
+            old_ids = set(await self.catalog.guids(metadata["comparison_version"]))
+            removed = sorted(old_ids - {item.guid for item in items})
+        metadata["removed_count"] = len(removed)
         if metadata["mode"] == "incremental":
             await self.index.clone(metadata["base_collection"], collection)
-            old_ids = set(await self.catalog.guids(metadata["base_version"]))
-            removed = sorted(old_ids - {item.guid for item in items})
             for start in range(0, len(removed), 500):
                 await self.index.delete_points(collection, removed[start : start + 500])
-            metadata["removed_count"] = len(removed)
         else:
             await self.index.create(collection, metadata["dimension"])
         metadata.update(initialized=True, updated_at=time())
@@ -154,15 +206,29 @@ class SynchronizeCatalogUseCase:
         """Фиксирует offset после durable upsert; повтор незавершённой пачки идемпотентен."""
         for start in range(metadata["resume_offset"], len(items), self.batch_size):
             batch = items[start : start + self.batch_size]
-            if metadata["mode"] == "incremental":
+            for name in ("added_count", "changed_count", "unchanged_count"):
+                metadata.setdefault(name, 0)
+            if metadata.get("comparison_version"):
                 old = await self.catalog.items(
-                    metadata["base_version"], [item.guid for item in batch]
+                    metadata["comparison_version"], [item.guid for item in batch]
                 )
-                batch = [
-                    item
+                metadata["added_count"] += sum(item.guid not in old for item in batch)
+                metadata["changed_count"] += sum(
+                    item.guid in old and old[item.guid].content_hash != item.content_hash
                     for item in batch
-                    if item.guid not in old or old[item.guid].content_hash != item.content_hash
-                ]
+                )
+                metadata["unchanged_count"] += sum(
+                    item.guid in old and old[item.guid].content_hash == item.content_hash
+                    for item in batch
+                )
+                if metadata["mode"] == "incremental":
+                    batch = [
+                        item
+                        for item in batch
+                        if item.guid not in old or old[item.guid].content_hash != item.content_hash
+                    ]
+            else:
+                metadata["added_count"] += len(batch)
             if batch:
                 keys = [digest([metadata["fingerprint"], item.content_hash]) for item in batch]
                 vectors = await self.catalog.vectors(keys)

@@ -54,6 +54,29 @@ class Settings(BaseSettings):
     duplicate_code_policy: str = "quarantine"
     catalog_daily_sync: bool = False
     catalog_sync_seconds: int = Field(86400, ge=60)
+    catalog_sync_time_utc: str = "15:00"
+    catalog_audit_retention_days: int = Field(90, ge=1, le=3650)
+    dashboard_metrics_retention_days: int = Field(90, ge=28, le=3650)
+    catalog_staging_directory: Path = Path("staging")
+    operator_session_seconds: int = Field(900, ge=60, le=3600)
+    operator_ticket_seconds: int = Field(120, ge=30, le=600)
+    worker_heartbeat_ttl_seconds: int = Field(45, ge=10, le=300)
+    onec_catalog_url: str = ""
+    onec_catalog_http_method: str = "GET"
+    onec_catalog_auth_type: str = "none"
+    onec_catalog_username: SecretStr = SecretStr("")
+    onec_catalog_password: SecretStr = SecretStr("")
+    onec_catalog_token: SecretStr = SecretStr("")
+    onec_catalog_response_format: str = "xml"
+    onec_catalog_export_mode: str = "full"
+    onec_catalog_timeout_seconds: int = Field(60, ge=1, le=300)
+    onec_catalog_completion_header: str = ""
+    onec_catalog_completion_value: str = ""
+    onec_catalog_contract_confirmed: bool = False
+    onec_catalog_allowed_hosts: list[str] = Field(default_factory=list)
+    onec_catalog_allowed_networks: list[str] = Field(default_factory=list)
+    onec_catalog_allowed_ports: list[int] = Field(default_factory=lambda: [443])
+    onec_catalog_allow_http: bool = False
     retention_seconds: int = Field(3600, ge=60, le=86400)
     draft_ttl_seconds: int = Field(3600, ge=60, le=3600)
     catalog_import_timeout_seconds: int = Field(86400, ge=3600, le=604800)
@@ -85,6 +108,8 @@ class Settings(BaseSettings):
             raise ValueError("duplicate_code_policy: reject или quarantine")
         if self.app_port == 8083:
             raise ValueError("Порт 8083 принадлежит spec-extracting-ai")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", self.catalog_sync_time_utc):
+            raise ValueError("CATALOG_SYNC_TIME_UTC: требуется HH:MM UTC")
         public = urlsplit(self.app_public_base_url)
         if (
             public.scheme not in {"http", "https"}

@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse, Response
 from src.application.mappings import public_status, result_page
 from src.application.reports import export_json, export_xlsx
 from src.domain.models import MapperError
+from src.presentation.dashboard_schemas import CatalogImportStatus, ImportSource
+from src.presentation.operator_security import operator_owner
 from src.presentation.schemas import (
     Approval,
     ApprovedExport,
@@ -25,11 +27,11 @@ from src.presentation.schemas import (
     SourceDocument,
     SubmitMapping,
 )
-from src.presentation.security import COOKIE, admin_owner, csrf_token, new_session, owner
+from src.presentation.security import COOKIE, csrf_token, new_session, owner
 
 router = APIRouter(prefix="/api/v1")
 Owner = Annotated[str, Depends(owner)]
-Admin = Annotated[str, Depends(admin_owner)]
+Admin = Annotated[str, Depends(operator_owner)]
 Key = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)]
 
 
@@ -196,13 +198,31 @@ async def search_catalog(
     return {"items": await request.app.state.container.catalog.search(q, limit)}
 
 
-@router.post("/catalog/imports", response_model=MappingStatus, status_code=202)
-async def import_catalog(request: Request, current: Admin, key: Key) -> dict:
+@router.post("/catalog/imports", response_model=CatalogImportStatus, status_code=202)
+async def import_catalog(
+    request: Request, current: Admin, key: Key, body: ImportSource | None = None
+) -> dict:
     """Инициирует импорт только из настроенного data/; пользовательский путь не принимается."""
-    return public_status(await request.app.state.container.jobs.create(current, key, {}, "catalog"))
+    job = await request.app.state.container.sync.trigger(
+        current, key, body.source_type if body else None
+    )
+    return catalog_progress(job)
 
 
-@router.get("/catalog/imports/{job_id}", response_model=MappingStatus)
+@router.get("/catalog/imports/{job_id}", response_model=CatalogImportStatus)
 async def catalog_import_status(request: Request, job_id: UUID, current: Admin) -> dict:
     """Возвращает статус импорта только владельцу привилегированного credential."""
-    return public_status(await request.app.state.container.jobs.get(str(job_id), current))
+    return catalog_progress(await request.app.state.container.jobs.get(str(job_id), current))
+
+
+def catalog_progress(job: dict) -> dict:
+    """Расширяет только catalog response, сохраняя прежние MappingStatus поля и owner-check."""
+    progress = job["data"].get("catalog_progress", {})
+    return {
+        **public_status(job),
+        "source_type": job["data"].get("catalog_sync", {}).get("source_type", "local_xml"),
+        "downloaded_bytes": job["data"].get(
+            "downloaded_bytes", progress.get("downloaded_bytes", 0)
+        ),
+        "metrics": job["data"].get("catalog_status", {}).get("run_statistics", {}),
+    }

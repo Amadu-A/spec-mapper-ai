@@ -65,3 +65,29 @@ async def test_dispatcher_failure_does_not_lose_outbox(system, source, monkeypat
     with pytest.raises(asyncio.CancelledError):
         await maintenance(container)
     assert job["id"] in await container.jobs.pending()
+
+
+async def test_scheduler_configuration_failure_does_not_block_mapping(system, source, monkeypatch):
+    """Ошибка источника расписания не задерживает доставку независимых mapping jobs."""
+    container, *_ = system
+    job = await container.mappings.import_document("owner", "schedule-failure", source)
+    published = []
+
+    async def tick():
+        """Имитирует отказ конфигурации до enqueue импорта."""
+        raise ValueError("invalid source configuration")
+
+    async def publish(job_id):
+        """Подтверждает доставку независимого mapping UUID."""
+        published.append(job_id)
+
+    async def stop(delay):
+        """Завершает проверку после одного цикла maintenance."""
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(container.sync, "tick", tick)
+    monkeypatch.setattr(container.broker, "publish", publish)
+    monkeypatch.setattr("src.worker.asyncio.sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        await maintenance(container)
+    assert published == [job["id"]]

@@ -96,3 +96,13 @@ Daily sync — встроенное расписание worker без отде�
 RabbitMQ, embedding identity, Qdrant count и готовый каталог. Браузерные индикаторы
 используют этот ответ. Логи JSON с безопасным allow-list; timing применён к ключевым
 use-cases. Docker local driver хранит не более пяти файлов по 10 МБ на контейнер.
+
+## Развитие V2
+
+`domain/catalog_sync.py` — чистое UTC расписание/метрики; application CatalogManagement
+зависит от SyncRepository/CatalogSources. Infrastructure реализует SQL transaction lock,
+HTTP source, operator tickets и технические probes; bootstrap собирает зависимости.
+Worker использует прежний outbox/processor; source override входит в тот же каталоговый
+pipeline. Миграция 0003 добавляет отдельные настройки/историю/счётчики и не меняет 0001/0002.
+Browser модули разбиты по реальным страницам, источник истины — backend.
+[Точная семантика и ограничения](DASHBOARD_AND_SYNC.md).

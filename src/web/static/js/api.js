@@ -1,6 +1,7 @@
 // src/web/static/js/api.js
 /** Единый HTTP-клиент: cookie/CSRF, безопасная диагностика и отмена устаревших запросов. */
 let csrf = "";
+let operatorCsrf = "";
 
 export class ApiError extends Error {
   /** Сохраняет безопасный код backend без вывода исходного запроса. */
@@ -12,6 +13,7 @@ export async function api(path, options = {}) {
   const headers = new Headers(options.headers);
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
   if (csrf) headers.set("X-CSRF-Token", csrf);
+  if (operatorCsrf) headers.set("X-Operator-CSRF", operatorCsrf);
   let response;
   try { response = await fetch(path, { ...options, headers, credentials: "same-origin" }); }
   catch (error) {
@@ -26,6 +28,13 @@ export async function api(path, options = {}) {
 export async function initializeSession() {
   /** Получает только CSRF своей сессии; upstream credentials остаются на сервере. */
   csrf = (await api("/api/v1/session")).csrf;
+}
+
+export async function initializeOperator() {
+  /** Получает короткую серверную роль без API-ключей в браузере. */
+  const session = await api("/api/v1/operator/session");
+  operatorCsrf = session.csrf || "";
+  return session;
 }
 
 export function writeOptions(body, idempotencyKey) {

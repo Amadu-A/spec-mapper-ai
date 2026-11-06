@@ -1,0 +1,4 @@
+<!-- src/web/templates/catalog.html -->
+{% extends "base.html" %}
+{# Поиск разрешённых активных позиций; параметры подключения редактируются отдельно. #}
+{% block content %}<section class="panel panel--padded"><h1>Справочник номенклатуры 1С</h1><p data-catalog-info>Загрузка текущего снимка…</p><ul class="notice notice--warning" data-catalog-warnings hidden></ul><label for="catalog-query">Поиск по имени, коду или артикулу</label><input class="input input--wide" id="catalog-query" type="search" placeholder="Наименование, код или артикул…" data-catalog-query disabled><div data-catalog-items></div><a class="button" href="/settings">Управление обновлением</a></section>{% endblock %}

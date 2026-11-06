@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict, deque
 from time import monotonic
 
@@ -38,12 +39,14 @@ class LimitsMiddleware:
         bucket = self.requests[client]
         while bucket and bucket[0] <= now - 60:
             bucket.popleft()
-        if len(bucket) >= self.per_minute:
+        counted = not scope.get("path", "").startswith("/static/")
+        if counted and len(bucket) >= self.per_minute:
             await JSONResponse(
                 {"error": {"code": "rate_limit", "message": "Слишком много запросов"}}, 429
             )(scope, receive, send)
             return
-        bucket.append(now)
+        if counted:
+            bucket.append(now)
         content = bytearray()
         if scope["method"] in {"POST", "PUT", "PATCH"}:
             try:
@@ -73,9 +76,13 @@ class LimitsMiddleware:
 
             receive = buffered_receive
 
+        response_status = 500
+
         async def secured_send(message):
             """Запрещает кэш документов и загрузку исполняемых ресурсов с внешних доменов."""
+            nonlocal response_status
             if message["type"] == "http.response.start":
+                response_status = message["status"]
                 message["headers"].extend(
                     [
                         (b"x-content-type-options", b"nosniff"),
@@ -92,3 +99,9 @@ class LimitsMiddleware:
             await send(message)
 
         await self.app(scope, receive, secured_send)
+        integration = scope.get("state", {}).get("integration_name")
+        if integration and 200 <= response_status < 300:
+            try:
+                await scope["app"].state.container.sync_repository.touch("api:" + integration)
+            except Exception:
+                logging.getLogger(__name__).warning("integration_activity_retry")
