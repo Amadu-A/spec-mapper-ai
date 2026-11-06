@@ -1,0 +1,46 @@
+# pyproject.toml
+# Зависимости сервиса и единые настройки проверок Windows/Linux.
+[project]
+name = "spec-mapper-ai"
+version = "1.0.0"
+description = "Сопоставление спецификаций с локальным справочником 1С"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi>=0.121,<1", "uvicorn>=0.38,<1", "pydantic-settings>=2.11,<3",
+  "sqlalchemy[asyncio]>=2.0.44,<3", "psycopg[binary]>=3.2,<4",
+  "alembic>=1.17,<2", "httpx>=0.28,<1", "aio-pika>=9.5,<10",
+  "defusedxml>=0.7.1,<1", "openpyxl>=3.1.5,<4", "jinja2>=3.1.6,<4",
+  "itsdangerous>=2.2,<3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14,<1",
+    "pytest>=8.4,<10",
+    "pytest-asyncio>=1.2,<2",
+    "pytest-cov>=7,<8",
+    "aiosqlite>=0.21,<1",
+    "playwright>=1.55,<2",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["examples", ".cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["live: требует подготовленных PostgreSQL/Qdrant/RabbitMQ/shared-embedding", "e2e: требует запущенного сервиса"]
+
+[tool.coverage.run]
+branch = true
+source = ["src"]

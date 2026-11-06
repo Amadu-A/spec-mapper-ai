@@ -1,0 +1,40 @@
+<!-- src/web/templates/base.html -->
+<!doctype html>
+<!-- Базовая инженерная оболочка; ресурсы локальные, серверные ключи в HTML не передаются. -->
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spec Mapper AI — сопоставление спецификаций</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body class="page">
+<a class="page__skip" href="#main">Перейти к содержимому</a>
+<aside class="sidebar" aria-label="Рабочее пространство">
+  <a class="sidebar__brand" href="/"><span class="sidebar__mark" aria-hidden="true">▦</span><span>Spec Mapper <span class="sidebar__ai">AI</span><small>ИНЖЕНЕРНАЯ СИСТЕМА</small></span></a>
+  <p class="sidebar__label">Рабочее пространство</p>
+  <nav class="sidebar__nav" aria-label="Основное меню">
+    <button class="sidebar__link sidebar__link--active" type="button" data-nav="mapping" aria-current="page">▤ &nbsp; Сопоставление</button>
+    <button class="sidebar__link" type="button" data-nav="jobs">▱ &nbsp; Задания</button>
+    <button class="sidebar__link" type="button" data-nav="catalog">▦ &nbsp; Справочник 1С</button>
+  </nav>
+  <section class="sidebar__status" aria-label="Состояние подключений">
+    <h2>Состояние подключений</h2>
+    <p>Embedding <span data-dependency="shared_embedding">Проверяется</span></p>
+    <p>Qdrant <span data-dependency="qdrant">Проверяется</span></p>
+    <p>RabbitMQ <span data-dependency="rabbitmq">Проверяется</span></p>
+    <p>Каталог 1С <span data-dependency="catalog">Проверяется</span></p>
+    <small>SPEC MAPPER · ЛОКАЛЬНЫЙ СЕРВИС</small>
+  </section>
+</aside>
+<div class="page__body">
+  <header class="header"><span>Рабочее пространство <span aria-hidden="true"> / </span><strong data-breadcrumb>Сопоставление</strong></span><span class="header__catalog" data-catalog-date>Каталог ещё не загружен</span><span class="header__avatar" aria-hidden="true">SM</span></header>
+  <main class="page__main" id="main">
+    <p class="notice" role="status" aria-live="polite" data-notice hidden></p>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="page__footer">Исходный JSON сохраняется без изменений. Результаты доступны 1 час после завершения обработки.</footer>
+</div>
+</body>
+</html>

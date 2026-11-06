@@ -1,0 +1,33 @@
+<!-- src/web/templates/mapping.html -->
+{% extends "base.html" %}
+{# Рабочая таблица, история сессии и каталог; все данные загружаются через авторизованный API. #}
+{% block content %}
+<section data-view="mapping">
+  <div class="heading"><div><h1>Сопоставление спецификации</h1><p>Подбор номенклатуры 1С для каждой позиции с возможностью ручной корректировки</p></div><div class="heading__actions"><a class="button" data-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-export="result.json" aria-disabled="true">↓ JSON</a><a class="button button--primary" data-export="result.xlsx" aria-disabled="true">↓ Экспорт Excel</a></div></div>
+  <section class="source" aria-labelledby="source-title">
+    <div><h2 id="source-title">Источник: spec-extracting-ai</h2><p class="source__status" data-job-status>Укажите ID задания извлечения или импортируйте готовый JSON</p></div>
+    <form class="source__form" data-submit>
+      <label class="page__sr-only" for="source-id">UUID задания извлечения</label>
+      <input class="input" id="source-id" name="source_job_id" placeholder="UUID задания извлечения" required autocomplete="off">
+      <button class="button button--primary" type="submit">Сопоставить</button>
+    </form>
+    <div class="source__import"><label class="button" for="json-file">↑ Импорт готового JSON</label><input class="page__file" id="json-file" type="file" accept="application/json,.json" data-import><span data-job-id></span></div>
+  </section>
+  <div class="metrics" aria-label="Итоги сопоставления">
+    <article class="metric"><h2>Всего позиций</h2><strong data-count="total">0</strong><span>Из исходного JSON</span></article>
+    <article class="metric metric--green"><h2>Подобрано</h2><strong data-count="matched">0</strong><span>Включая ручной выбор</span></article>
+    <article class="metric metric--yellow"><h2>Требует проверки</h2><strong data-count="review">0</strong><span>Неоднозначные кандидаты</span></article>
+    <article class="metric metric--red"><h2>Без соответствия</h2><strong data-count="not_found">0</strong><span>Доступен ручной поиск</span></article>
+  </div>
+  <section class="workspace" aria-labelledby="table-title">
+    <div class="workspace__head"><div><h2 id="table-title">Позиции спецификации</h2><p>Предварительный подбор · ручной выбор сохраняется отдельно от исходного JSON</p></div><div class="workspace__tools"><label class="page__sr-only" for="filter">Поиск по спецификации</label><input class="input" id="filter" type="search" placeholder="Поиск по спецификации…" data-filter><label class="page__sr-only" for="status">Фильтр статуса</label><select class="input" id="status" data-status><option value="all">Все статусы</option><option value="matched">Подобрано</option><option value="review">Требует проверки</option><option value="not_found">Не найдено</option><option value="manual">Вручную</option></select></div></div>
+    <div class="match-table__scroll"><table class="match-table"><caption class="page__sr-only">Сопоставления с каталогом 1С. Оценка cosine — мера сходства, не вероятность.</caption><thead><tr><th scope="col">№</th><th scope="col">Исходная позиция / Caption</th><th scope="col">Ед. / Кол-во</th><th scope="col">Номенклатура 1С</th><th scope="col">Cosine</th><th scope="col">Статус</th><th scope="col">Действие</th></tr></thead><tbody data-rows></tbody></table></div>
+    <div class="workspace__empty" data-empty>Здесь появятся позиции вашей спецификации. Данные ещё не загружены.</div>
+    <div class="workspace__foot"><span data-page-info>Нет активного задания</span><div class="pagination"><button class="button" type="button" data-previous disabled>Назад</button><span data-page>1</span><button class="button" type="button" data-next disabled>Вперёд</button></div></div>
+  </section>
+  <div class="pipeline" role="status" data-pipeline>Ожидание спецификации. Автоматический подбор не означает проверку человеком.</div>
+</section>
+<section data-view="jobs" hidden><div class="heading"><div><h1>Задания текущей сессии</h1><p>После истечения срока хранения задания удаляются автоматически</p></div><button class="button" type="button" data-refresh-jobs>↻ Обновить</button></div><div class="workspace" data-jobs></div></section>
+<section data-view="catalog" hidden><div class="heading"><div><h1>Справочник номенклатуры 1С</h1><p>Активные позиции из XML · собственные PostgreSQL и Qdrant</p></div></div><section class="workspace workspace--padded"><p data-catalog-info>Проверка каталога…</p><ul class="notice notice--warning" data-catalog-warnings hidden></ul><label for="catalog-query">Поиск по имени, коду или артикулу</label><input class="input input--wide" id="catalog-query" type="search" placeholder="Например: клапан или 00-00034629" data-catalog-query><div data-catalog-items></div></section></section>
+{% include "selection.html" %}
+{% endblock %}

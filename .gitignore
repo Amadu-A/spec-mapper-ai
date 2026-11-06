@@ -1,0 +1,21 @@
+# .gitignore
+# Локальные данные, секреты и сохранённая историческая заготовка не публикуются.
+.env
+.env.*
+!.env.example
+examples/
+data/*
+!data/.gitkeep
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+*.log
+.idea/
+.vscode/
+test-results/
+playwright-report/

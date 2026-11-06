@@ -1,0 +1,9 @@
+/* src/web/static/css/style.css */
+/* Единственный entrypoint; стили разделены по блокам инженерного интерфейса. */
+@import url("./variables.css");
+@import url("./global.css");
+@import url("./blocks/page.css");
+@import url("./blocks/controls.css");
+@import url("./blocks/workspace.css");
+@import url("./blocks/table.css");
+@import url("./blocks/drawer.css");

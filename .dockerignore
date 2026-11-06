@@ -1,0 +1,18 @@
+# .dockerignore
+# Секреты и реальные выгрузки монтируются отдельно и никогда не попадают в образ.
+.git
+.env
+.env.*
+!.env.example
+.venv
+.cache
+__pycache__
+.pytest_cache
+.ruff_cache
+*.log
+data
+examples
+renders
+.idea
+.vscode
+test-results

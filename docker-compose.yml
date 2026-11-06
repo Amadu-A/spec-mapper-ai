@@ -1,0 +1,138 @@
+# docker-compose.yml
+# Только собственные ресурсы; RabbitMQ и shared-embedding принадлежат внешнему stack.
+name: spec-mapper-ai
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "5"
+x-app: &app
+  image: spec-mapper-ai:local
+  build:
+    context: .
+    target: runtime
+  env_file:
+    - path: .env.example
+    - path: .env
+      required: false
+  environment: &environment
+    APP_BIND: ${APP_BIND:-0.0.0.0}
+    APP_PORT: ${APP_PORT:-8084}
+    DATABASE_HOST: ${DATABASE_HOST:-postgres}
+    DATABASE_PORT: ${DATABASE_PORT:-5432}
+    DATABASE_NAME: ${DATABASE_NAME:-spec_mapper}
+    DATABASE_USER: ${DATABASE_USER:-spec_mapper}
+    DATABASE_PASSWORD: ${DATABASE_PASSWORD:-}
+    RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+    RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+    RABBITMQ_USER: ${RABBITMQ_USER:-spec_mapper}
+    RABBITMQ_VHOST: ${RABBITMQ_VHOST:-spec_mapper}
+    RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-spec_mapper.jobs}
+    RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
+    SHARED_EMBEDDING_BASE_URL: ${SHARED_EMBEDDING_BASE_URL:-http://shared-embedding:8000/v1}
+    SHARED_EMBEDDING_MODEL: ${SHARED_EMBEDDING_MODEL:-shared-embedding}
+    EMBEDDING_REVISION: ${EMBEDDING_REVISION:-}
+    EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-32}
+    EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-90}
+    QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+    QDRANT_ALIAS: ${QDRANT_ALIAS:-spec_mapper_catalog}
+    EXTRACTING_BASE_URL: ${EXTRACTING_BASE_URL:-http://spec-extracting-ai-api-1:8083}
+    EXTRACTING_API_KEY: ${EXTRACTING_API_KEY:-}
+    API_KEY: ${API_KEY:-}
+    CATALOG_ADMIN_KEY: ${CATALOG_ADMIN_KEY:-}
+    SESSION_SECRET: ${SESSION_SECRET:-}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    DATA_DIRECTORY: ${DATA_DIRECTORY:-data}
+    DUPLICATE_CODE_POLICY: ${DUPLICATE_CODE_POLICY:-quarantine}
+    CATALOG_DAILY_SYNC: ${CATALOG_DAILY_SYNC:-false}
+    CATALOG_SYNC_SECONDS: ${CATALOG_SYNC_SECONDS:-86400}
+    RETENTION_SECONDS: ${RETENTION_SECONDS:-3600}
+    DRAFT_TTL_SECONDS: ${DRAFT_TTL_SECONDS:-3600}
+    POLL_SECONDS: ${POLL_SECONDS:-3}
+    UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-900}
+    HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}
+    MAX_RESULT_BYTES: ${MAX_RESULT_BYTES:-15000000}
+    MAX_XML_BYTES: ${MAX_XML_BYTES:-200000000}
+    MAX_ITEMS: ${MAX_ITEMS:-10000}
+    TOP_K: ${TOP_K:-5}
+    MATCH_THRESHOLD: ${MATCH_THRESHOLD:-0.88}
+    MATCH_MARGIN: ${MATCH_MARGIN:-0.05}
+    WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    LEASE_SECONDS: ${LEASE_SECONDS:-120}
+    MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+    RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  volumes:
+    - ./data:/app/data:ro
+  networks: [private, ai-shared]
+  logging: *logging
+  restart: unless-stopped
+  init: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-spec_mapper}
+      POSTGRES_USER: ${DATABASE_USER:-spec_mapper}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [private]
+    logging: *logging
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.16.2
+    volumes: [qdrant_data:/qdrant/storage]
+    networks: [private]
+    logging: *logging
+    restart: unless-stopped
+  migrate:
+    <<: *app
+    command: [/app/.venv/bin/alembic, upgrade, head]
+    restart: "no"
+    networks: [private]
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    <<: *app
+    ports: ['${APP_BIND:-0.0.0.0}:${APP_PORT:-8084}:8000']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      qdrant: {condition: service_started}
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: [/app/.venv/bin/python, -m, src.worker]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      qdrant: {condition: service_started}
+    stop_grace_period: 30s
+  tests:
+    <<: *app
+    image: spec-mapper-ai-tests:local
+    build: {context: ., target: test}
+    profiles: [test]
+    restart: "no"
+    networks: [private, ai-shared]
+    logging: *logging
+
+networks:
+  private:
+    internal: true
+  ai-shared:
+    external: true
+    name: ai-shared
+volumes:
+  postgres_data:
+  qdrant_data:

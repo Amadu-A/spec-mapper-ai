@@ -1,0 +1,3 @@
+/* src/web/static/css/global.css */
+/* Базовые семантические элементы, контраст, focus и доступное скрытие. */
+*{box-sizing:border-box}body{margin:0;background:var(--background);color:var(--ink);font-size:13px}button,input,select{font:inherit}button,a,label[for="json-file"]{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #8eb5fb;outline-offset:3px}h1{font-size:27px;letter-spacing:-.6px;margin:0 0 8px}h2{font-size:15px;margin:0 0 8px}p{line-height:1.6}small{font-size:11px}a{color:var(--blue)}[hidden]{display:none!important}button:disabled{opacity:.5;cursor:not-allowed}input[type="radio"]{accent-color:var(--blue)}

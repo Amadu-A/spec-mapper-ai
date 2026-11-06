@@ -1,0 +1,12 @@
+<!-- src/web/templates/selection.html -->
+<!-- Native dialog обеспечивает modal focus trap, Escape и возврат фокуса к строке таблицы. -->
+<dialog class="drawer" data-drawer aria-labelledby="drawer-title">
+  <div class="drawer__header"><div><h2 id="drawer-title">Выбор номенклатуры</h2><p>Top-K и поиск по всему справочнику 1С</p></div><button class="button" type="button" data-close aria-label="Закрыть выбор номенклатуры">×</button></div>
+  <div class="drawer__source"><small>ИСХОДНАЯ ПОЗИЦИЯ</small><p data-source-caption></p><small data-source-meta></small></div>
+  <p class="notice notice--warning" data-drawer-error hidden role="alert"></p>
+  <fieldset class="drawer__choices"><legend>Рекомендованные кандидаты</legend><p class="drawer__hint">Cosine-score отражает сходство текстов. Технические конфликты указаны отдельно.</p><div data-candidates></div></fieldset>
+  <label for="drawer-query">Поиск по всей номенклатуре</label><input class="input input--wide" id="drawer-query" type="search" placeholder="Наименование, артикул или код 1С…" data-search-candidates>
+  <div data-search-results></div>
+  <label class="candidate candidate--none"><input type="radio" name="catalog-choice" value="" data-no-match><span>Нет подходящей позиции<small>Подтвердить отсутствие соответствия</small></span></label>
+  <div class="drawer__footer"><span data-save-status>Выбор ещё не сохранён</span><button class="button" type="button" data-close>Отмена</button><button class="button button--primary" type="button" data-save-selection disabled>Сохранить выбор</button></div>
+</dialog>

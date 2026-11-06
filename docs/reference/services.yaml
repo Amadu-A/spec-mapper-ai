@@ -1,0 +1,440 @@
+# docs/services.yaml
+
+schema_version: 3
+
+bundle:
+  entrypoint: docs/LLM_CONTEXT.md
+  engineering_guidelines: docs/ENGINEERING_GUIDELINES.md
+  frontend_guidelines: docs/FRONTEND_GUIDELINES.md
+  infrastructure_guidelines: docs/INFRASTRUCTURE_INSTRUCTIONS.md
+  registry: docs/services.yaml
+
+stack:
+  name: shared-infrastructure
+  compose_project_name: shared
+  recommended_directory: ~/projects/shared-infrastructure
+  owner: shared-infrastructure
+  purpose: Shared infrastructure for multiple application projects
+
+networks:
+  ai_shared:
+    name: ai-shared
+    lifecycle: external
+    purpose: Cross-project network for approved shared services
+
+ai_inference:
+  target_runtime: vllm
+
+  principles:
+    hardware_portable: true
+    stable_logical_endpoints: true
+    physical_models_from_environment: true
+    gpu_placement_from_environment: true
+    parallelism_from_environment: true
+    resident_production_models: true
+    topology_check_required_for_multi_gpu_tp: true
+    request_level_model_load_unload: false
+    silent_cpu_fallback: false
+
+  application_contract:
+    vlm:
+      base_url: http://shared-vlm:8000/v1
+      model: shared-vlm
+
+    embedding:
+      base_url: http://shared-embedding:8000/v1
+      model: shared-embedding
+      embeddings_endpoint: http://shared-embedding:8000/v1/embeddings
+      pooling_endpoint: http://shared-embedding:8000/pooling
+
+  workload_policy:
+    interactive: direct shared inference endpoint
+    batch: RabbitMQ -> bounded project worker -> shared inference endpoint
+
+host_access_policy:
+  shared_api_ui_published: true
+  public_host_environment_variable: SHARED_PUBLIC_HOST
+  default_bind_ip: 0.0.0.0
+  intended_scope: trusted LAN and VPN
+  firewall_source_restriction_required: true
+
+  notes:
+    - SHARED_PUBLIC_HOST is the IP or DNS name advertised to clients on other hosts.
+    - Bind IP and public host are different settings.
+    - Application containers on the same host should use Docker DNS over ai-shared.
+    - Infrastructure-private dependencies should not publish host ports.
+    - Published inference endpoints rely on trusted LAN/VPN reachability and host firewall rules.
+    - Docling is a loopback-only exception and also requires its own API key.
+
+services:
+  shared-vlm:
+    managed_here: true
+    lifecycle: shared
+    runtime: vllm
+
+    compose_service: shared-vlm
+    compose_profile: ai-vlm
+
+    docker_dns_name: shared-vlm
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://shared-vlm:8000/v1
+      use_from: containers attached to ai-shared
+
+    host_access:
+      published: true
+      public_host_environment_variable: SHARED_PUBLIC_HOST
+      bind_ip_environment_variable: SHARED_VLM_BIND_IP
+      host_port_environment_variable: SHARED_VLM_HOST_PORT
+      default_host_port: 8000
+      url_template: http://<SHARED_PUBLIC_HOST>:8000/v1
+      intended_scope: LAN and VPN
+      firewall_restricted: true
+
+    authentication:
+      type: none
+      perimeter: trusted_lan_vpn_firewall
+      notes:
+        - Access is controlled by network reachability and host firewall rules.
+
+    endpoints:
+      health: /health
+      metrics: /metrics
+      models: /v1/models
+      chat_completions: /v1/chat/completions
+
+    model:
+      logical_name: shared-vlm
+      physical_model_source: environment
+      model_id_environment_variable: SHARED_VLM_MODEL_ID
+      revision_environment_variable: SHARED_VLM_MODEL_REVISION
+      alias_environment_variable: SHARED_VLM_MODEL_ALIAS
+
+    gpu:
+      required: true
+      vendor: nvidia
+      placement_source: environment
+      devices_environment_variable: SHARED_VLM_GPU_DEVICES
+      tensor_parallel_environment_variable: SHARED_VLM_TP_SIZE
+      data_parallel_environment_variable: SHARED_VLM_DP_SIZE
+      topology_aware_tp_required: true
+
+    notes:
+      - Application projects should use the logical shared-vlm contract.
+      - Projects must not depend on physical model IDs or GPU layout.
+      - Final TP/DP layout is deployment configuration selected by benchmark.
+
+  shared-embedding:
+    managed_here: true
+    lifecycle: shared
+    runtime: vllm
+
+    compose_service: shared-embedding
+    compose_profile: ai-embedding
+
+    docker_dns_name: shared-embedding
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://shared-embedding:8000
+      use_from: containers attached to ai-shared
+
+    host_access:
+      published: true
+      public_host_environment_variable: SHARED_PUBLIC_HOST
+      bind_ip_environment_variable: SHARED_EMBEDDING_BIND_IP
+      host_port_environment_variable: SHARED_EMBEDDING_HOST_PORT
+      default_host_port: 8001
+      url_template: http://<SHARED_PUBLIC_HOST>:8001
+      intended_scope: LAN and VPN
+      firewall_restricted: true
+
+    authentication:
+      type: none
+      perimeter: trusted_lan_vpn_firewall
+      notes:
+        - Access is controlled by network reachability and host firewall rules.
+
+    endpoints:
+      health: /health
+      metrics: /metrics
+      models: /v1/models
+      embeddings: /v1/embeddings
+      pooling: /pooling
+
+    model:
+      logical_name: shared-embedding
+      physical_model_source: environment
+      model_id_environment_variable: SHARED_EMBEDDING_MODEL_ID
+      revision_environment_variable: SHARED_EMBEDDING_MODEL_REVISION
+      alias_environment_variable: SHARED_EMBEDDING_MODEL_ALIAS
+
+    gpu:
+      required: true
+      vendor: nvidia
+      placement_source: environment
+      devices_environment_variable: SHARED_EMBEDDING_GPU_DEVICES
+      tensor_parallel_environment_variable: SHARED_EMBEDDING_TP_SIZE
+      data_parallel_environment_variable: SHARED_EMBEDDING_DP_SIZE
+      topology_aware_tp_required: true
+
+    compatibility:
+      vector_identity_change_requires_migration_check: true
+      silent_reindex: false
+
+    notes:
+      - Existing vector indexes must not silently reuse incompatible embeddings.
+
+  open-webui:
+    managed_here: true
+    lifecycle: shared-optional
+
+    compose_service: open-webui
+    compose_profile: ai-ui
+
+    docker_dns_name: open-webui
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://open-webui:8080
+
+    host_access:
+      published: true
+      public_host_environment_variable: SHARED_PUBLIC_HOST
+      bind_ip_environment_variable: OPEN_WEBUI_BIND_IP
+      host_port_environment_variable: OPEN_WEBUI_HOST_PORT
+      default_host_port: 3000
+      url_template: http://<SHARED_PUBLIC_HOST>:3000
+      intended_scope: LAN and VPN
+      firewall_restricted: true
+
+    purpose:
+      - Human chat interface
+      - Prompt testing
+      - Vision testing
+      - Manual shared-model verification
+
+    notes:
+      - Open WebUI is not a dependency of business applications.
+      - Open WebUI does not own vLLM model lifecycle.
+      - Infrastructure connection settings are managed through Compose and env.
+
+  searxng:
+    managed_here: true
+    lifecycle: shared-optional
+
+    compose_service: searxng
+    compose_profile: ai-search
+
+    docker_dns_name: searxng
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://searxng:8080
+      use_from: approved containers attached to ai-shared
+
+    host_access:
+      published: false
+
+    authentication:
+      internal_secret_environment_variable: SEARXNG_SECRET
+
+    endpoints:
+      health: /
+      search: /search
+
+    notes:
+      - SearXNG is not published on the host and remains internal to ai-shared.
+      - The ai-search profile controls whether this optional service runs.
+
+  docling:
+    managed_here: true
+    lifecycle: isolated-evaluation
+    runtime: docling-serve-cpu
+
+    compose_service: docling
+    compose_file: docling-eval/compose.yaml
+    compose_project_name: docling-eval
+    docker_dns_name: docling-eval
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://docling-eval:5001
+      use_from: approved containers attached to ai-shared
+
+    host_access:
+      published: true
+      bind_ip: 127.0.0.1
+      host_port_environment_variable: DOCLING_HOST_PORT
+      default_host_port: 5001
+      url_template: http://127.0.0.1:5001
+      intended_scope: Docker host only
+
+    authentication:
+      type: api_key
+      secret_environment_variable: DOCLING_API_KEY
+
+    endpoints:
+      health: /health
+      ui: /
+
+    resources:
+      device: cpu
+      memory_limit: 8g
+      cpu_limit: 4.0
+      pids_limit: 512
+
+    storage:
+      russian_tesseract_model: docling-eval/tessdata/rus.traineddata
+      model_source: tesseract-ocr/tessdata_fast
+      model_revision: 87416418657359cb625c412a48b6e1d6d41c29bd
+      model_sha256: e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
+      bind_mount_read_only: true
+      backup_required: false
+
+    security:
+      remote_services_enabled: false
+      no_new_privileges: true
+      capabilities_dropped:
+        - ALL
+
+    notes:
+      - This evaluation project does not own other shared-service lifecycles.
+      - Bootstrap downloads only the pinned Russian tessdata artifact after SHA-256 verification.
+      - English and orientation data are supplied by the image and checked at runtime.
+
+  n8n:
+    managed_here: true
+    lifecycle: shared
+
+    compose_service: n8n
+    docker_dns_name: n8n
+    network: ai-shared
+    protocol: http
+
+    internal_access:
+      url: http://n8n:5678
+
+    host_access:
+      published: true
+      public_host_environment_variable: SHARED_PUBLIC_HOST
+      bind_ip_environment_variable: N8N_BIND_IP
+      host_port_environment_variable: N8N_HOST_PORT
+      default_host_port: 5678
+      url_template: http://<SHARED_PUBLIC_HOST>:5678
+      intended_scope: LAN and VPN
+      firewall_restricted: true
+
+    storage:
+      database_service: n8n-db
+      database_shared_with_apps: false
+
+    notes:
+      - Use project prefixes in workflow names such as [PDRD] and [CONTRACT].
+
+  rabbitmq:
+    managed_here: true
+    lifecycle: shared
+
+    compose_service: rabbitmq
+    docker_dns_name: rabbitmq
+    network: ai-shared
+    protocol: amqp
+
+    internal_access:
+      endpoint: rabbitmq:5672
+
+    host_access:
+      published: true
+      public_host_environment_variable: SHARED_PUBLIC_HOST
+      bind_ip_environment_variable: RABBITMQ_BIND_IP
+      amqp_port_environment_variable: RABBITMQ_AMQP_HOST_PORT
+      management_port_environment_variable: RABBITMQ_MANAGEMENT_HOST_PORT
+      required_vhosts_environment_variable: RABBITMQ_REQUIRED_VHOSTS
+      default_amqp_host_port: 5672
+      default_management_host_port: 15672
+      amqp_endpoint_template: <SHARED_PUBLIC_HOST>:5672
+      management_url_template: http://<SHARED_PUBLIC_HOST>:15672
+      intended_scope: LAN and VPN
+      firewall_restricted: true
+
+    isolation:
+      recommended: One vhost and one application user per project
+
+    notes:
+      - Application projects should not use the bootstrap administrator account.
+      - Durable AI batch jobs should use bounded project workers.
+
+  n8n-db:
+    managed_here: true
+    lifecycle: infrastructure-private
+
+    compose_service: n8n-db
+    network: n8n-internal
+    internal_endpoint: n8n-db:5432
+    host_port_published: false
+    exposed_to_application_projects: false
+
+    notes:
+      - This PostgreSQL instance belongs only to n8n.
+      - Application projects must not use it as their project database.
+
+defaults_for_other_services:
+  postgres:
+    managed_here: false
+    lifecycle: project-specific-by-default
+
+  qdrant:
+    managed_here: false
+    lifecycle: project-specific-by-default
+
+  redis:
+    managed_here: false
+    lifecycle: project-specific-or-shared-by-explicit-decision
+
+  celery:
+    managed_here: false
+    lifecycle: project-specific
+
+  frontend:
+    managed_here: false
+    lifecycle: project-specific
+
+  backend:
+    managed_here: false
+    lifecycle: project-specific
+
+runtime_verification:
+  required: true
+  commands:
+    - docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+    - docker network ls
+    - sudo ss -lntp
+    - nvidia-smi
+    - ./scripts/check.sh
+
+llm_rules:
+  - Start with docs/LLM_CONTEXT.md and follow its task router.
+  - Do not read every guideline automatically; load only the documents required by the task.
+  - Read docs/ENGINEERING_GUIDELINES.md only when backend/application/code rules are relevant.
+  - Read docs/FRONTEND_GUIDELINES.md only when frontend is affected.
+  - Read docs/INFRASTRUCTURE_INSTRUCTIONS.md when infrastructure or shared services are affected.
+  - This services.yaml is required when a shared service is added, changed or consumed.
+  - managed_here indicates ownership; reuse requires shared lifecycle, permitted consumers and a suitable contract.
+  - Never reuse infrastructure-private services such as n8n-db from business applications.
+  - Use shared-vlm for shared generation and VLM workloads.
+  - Use shared-embedding for compatible shared embedding workloads.
+  - Use SearXNG only through ai-shared when the ai-search profile is enabled.
+  - Treat Docling as an isolated authenticated evaluation contract, not as part of the main Compose lifecycle.
+  - Do not create project-local vLLM when a suitable shared service exists.
+  - Physical model IDs/revisions, GPU placement, TP and DP settings belong to shared deployment configuration.
+  - Use Docker DNS/internal ports on the same host and SHARED_PUBLIC_HOST for approved LAN/VPN clients on other hosts.
+  - Use RabbitMQ plus bounded project workers for durable AI batch workloads.
+  - Verify runtime state; this registry describes intended topology, not proof that a service is running.
+
