@@ -1,100 +1,83 @@
 <!-- README.md -->
 # Spec Mapper AI
 
-Локальный сервис сопоставляет позиции проектных и рабочих спецификаций с номенклатурой 1С.
-Получает готовый JSON из `spec-extracting-ai` по UUID задания и серверному API-ключу,
-ищет Top-K в Qdrant через существующий `shared-embedding`, учитывает технические
-параметры и единицы. В web доступны поиск, ручной выбор, сохранение и экспорт JSON/Excel.
-Регистрации, обучения и облачных AI API нет.
+Вторая ступень после `spec-extracting-ai`: принимает готовый JSON от 1С/бота или
+получает его по UUID извлечения, подбирает **Top-5** через shared-embedding и Qdrant.
+Web позволяет искать по всему справочнику, перевыбирать позицию, явно оставлять её
+без соответствия и утверждать неизменяемый итог для 1С. Доступны JSON/Excel.
+Регистрации, обучения моделей и облачных AI API нет.
 
 ## Структура
 
 ```text
-src/domain/          модели, контракт исходной пятёрки, правила ранжирования
-src/application/     use-cases и порты; общие для API, web и worker
+src/domain/          исходные строки и правила ранжирования
+src/application/     use-cases API/web/worker, порты
 src/infrastructure/  PostgreSQL, XML, HTTP, Qdrant, RabbitMQ
-src/presentation/    HTTP, cookie, Origin/CSRF и ограничения запросов
+src/presentation/    REST, авторизация, cookie/CSRF
 src/web/             Jinja2, BEM CSS, JS modules
-src/bootstrap.py     сборка зависимостей
 alembic/             миграции собственной БД
-data/*.xml           локальная выгрузка; в Git не включается
-renders/             исходный концепт интерфейса
-tests/               unit, API, архитектура, regression, live и browser E2E
-examples/legacy/     сохранённая старая заготовка; игнорируется Git
+data/*.xml           актуальная выгрузка 1С; не коммитится
+renders/             концепт интерфейса
+tests/               unit, API, regression, architecture, browser, live
 ```
 
 ## Настройки
 
-`.env.example` — полный каталог обычных настроек и пустых секретов.
-Pydantic и скрипты Compose используют одинаковый приоритет:
-**окружение команды → `.env` → `.env.example` → defaults**.
-Обычные параметры меняйте в `.env.example` или окружении команды.
+Обычные настройки — в `.env.example` или окружении команды. Pydantic и Compose:
+**окружение → `.env` → `.env.example` → defaults**. `.env` содержит только секреты.
+Первый запуск атомарно создаёт отсутствующие `DATABASE_PASSWORD`, `RABBITMQ_PASSWORD`,
+`SESSION_SECRET`, `CATALOG_ADMIN_KEY` и `API_KEYS` с отдельными ключами `onec`/`telegram`.
+Существующие значения, включая прежний `API_KEY`, сохраняются; права Linux 0600.
+Пользователи web не создаются: автоматически готовятся DB/RabbitMQ credentials и cookie-сессии.
 
-При первом `up.sh` автоматически создаются только отсутствующие проектные секреты:
-`DATABASE_PASSWORD`, `RABBITMQ_PASSWORD`, `SESSION_SECRET`, `API_KEY`, `CATALOG_ADMIN_KEY`.
-Существующие пароли не заменяются. В `.env` дополнительно запишите:
+Для polling добавьте в `.env` **существующий** ключ извлечения:
 
 ```dotenv
-# Серверный интеграционный ключ spec-extracting-ai; в браузер не передаётся.
-EXTRACTING_API_KEY=<существующий ключ API извлечения>
+EXTRACTING_API_KEY=<ключ spec-extracting-ai, владеющий исходным заданием>
 ```
 
-Проверьте `EXTRACTING_BASE_URL` в `.env.example`: нужен фактический Docker DNS и
-внутренний порт извлечения в `ai-shared`. Ключ должен владеть upstream заданием:
-cookie-задание другого пользователя не становится доступным по чужому API-ключу.
-У `shared-embedding` отдельного API-ключа нет.
-Default `http://spec-extracting-ai-api-1:8083` соответствует опубликованному Compose
-извлечения с project name `spec-extracting-ai`; runtime адрес проверяется на сервере.
+Для прямого JSON upstream-ключ не нужен. Ключи mapper и extracting различаются;
+секрет shared-embedding не требуется. Не помещайте API-ключи в браузерный JavaScript.
 
 ## Развёртывание
 
-Требуются Linux, Docker Engine/Compose **2.24+**, `uv`, доступ к Docker, уже работающие
-`rabbitmq:5672` и `shared-embedding:8000` в существующей сети `ai-shared`.
-Положите реальный XML в `data/`, затем:
+Linux: Docker Engine/Compose **2.24+**, `uv`, доступ к Docker и работающие
+RabbitMQ/shared-embedding в `ai-shared`. Скопируйте XML в `data/`, затем:
 
 ```bash
 bash scripts/up.sh
 ```
 
-Команда проверяет порт, готовит выделенные user/vhost `spec_mapper`, собирает приложение,
-ждёт PostgreSQL, применяет миграции, запускает API/worker, импортирует XML и ждёт `/health/ready`.
-Показывает журналы. Повторный запуск сохраняет данные и volumes.
-Общие RabbitMQ/embedding не перезапускаются. Внешне открывается только web/API:
-`http://<адрес-сервера>:8084/`. Порт редактируется через `APP_PORT`; 8083 запрещён.
-Доступ к HTTP ограничьте существующим LAN/VPN firewall.
+Команда проверяет окружение/порт/XML, готовит секреты и выделенные RabbitMQ user/vhost,
+собирает контейнеры, применяет миграции, импортирует каталог с прогрессом и ждёт
+реальной готовности. Логи видны. Повторный запуск сохраняет данные и volumes.
+Адрес: **http://192.168.55.3:8087/**; API-документация: **/docs** без внешнего CDN.
+Параметры `APP_BIND`, `APP_PORT`, `APP_PUBLIC_BASE_URL` — в открытой конфигурации.
+DB/Qdrant наружу не публикуются. Доступ — LAN/VPN; публикация в интернет требует
+отдельного HTTPS reverse proxy и сетевой политики.
 
-В текущем XML нет GUID 1С: внутренний UUID детерминирован по коду и явно отделён от
-`onec_guid=null`. Все записи с конфликтующими кодами исключаются с предупреждением.
-В предоставленном файле парсер получил **62 052** активные однозначные позиции.
-Векторизация выполняется на сервере при первом импорте; неизменные позиции затем
-используют кэш. Полные обновления строятся в staging и публикуются атомарным alias switch.
+В текущем XML — **62 052** разрешённые активные позиции. Конфликтующие коды целиком
+карантинируются. GUID 1С отсутствует: внутренний UUID и `onec_guid=null` различаются.
+Первый импорт имеет отдельный предел 24 часа и возобновляемые checkpoints;
+неизменённые позиции повторно не векторизуются. Ежедневный XML sync выключен по умолчанию.
+Прямой адаптер справочника из 1С подключается после согласования её API.
 
 ## Проверки
-
-Windows, Ruff + Python/архитектура/API + frontend + браузерный E2E:
 
 ```powershell
 .\ops\check-quality.ps1
 ```
 
-Linux — одна команда, включая те же проверки:
-
 ```bash
-bash scripts/test.sh
+bash scripts/test.sh          # Ruff, Python, Node, браузер
+bash scripts/test.sh --live   # после up.sh, дополнительно реальные зависимости/API
 ```
 
-При первом запуске устанавливается Chromium. На минимальном Linux заранее выполните
-`uv run playwright install --with-deps chromium` для системных библиотек браузера.
-Браузерный тест использует настоящий FastAPI/SQLite и **подменённые внешние AI/broker порты**.
-Реальные интеграции проверяются отдельно на поднятом сервере:
+Первый запуск устанавливает Chromium; на минимальном Linux заранее:
+`uv run playwright install --with-deps chromium`. Браузерные offline-тесты явно
+подменяют AI/broker; live-тесты используют настоящие сервисы.
 
-```bash
-bash scripts/test.sh --live
-```
-
-Команды по умолчанию не прячут вывод. Внутренние прогоны можно перенаправлять в `.log`.
-Код и запуск не означают подтверждённую точность подбора на ваших спецификациях:
-порогам требуется приёмка на реальном размеченном корпусе.
-
-Подробности: [ТЗ](docs/TECHNICAL_SPECIFICATION.md), [архитектура](docs/architecture.md),
-[API](docs/API.md), [эксплуатация и ручные проверки](docs/operations.md).
+Программисту 1С: [контракты и последовательность вызовов](docs/INTEGRATION_1C.md).
+Также: [API](docs/API.md), [эксплуатация](docs/operations.md),
+[архитектура](docs/architecture.md), [ТЗ](docs/TECHNICAL_SPECIFICATION.md),
+[отчёт проверок](docs/IMPLEMENTATION_REPORT.md).

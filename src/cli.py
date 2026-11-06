@@ -1,47 +1,38 @@
 # src/cli.py
-"""Операторские операции: sparse secrets, проверка host, изолированный RabbitMQ user и импорт."""
+"""Операторские команды: безопасный bootstrap, ранняя диагностика и ожидание durable импорта."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import os
-import secrets
+import re
 import socket
 import subprocess
-from pathlib import Path
 from time import time
+
+import httpx
+from pydantic import ValidationError
 
 from src.bootstrap import build_container
 from src.config import Settings
-from src.domain.models import MapperError
+from src.domain.models import MapperError, digest
+from src.infrastructure.rabbitmq_bootstrap import discover_broker, provision_project_broker
+from src.infrastructure.secrets import prepare_project_secrets
+from src.infrastructure.xml_catalog import XmlCatalogSource
 
 
 def prepare_secrets() -> None:
-    """Добавляет только отсутствующие проектные секреты, не меняя существующие credentials."""
-    settings = Settings()
-    additions = []
-    for name in (
-        "database_password",
-        "rabbitmq_password",
-        "session_secret",
-        "api_key",
-        "catalog_admin_key",
-    ):
-        if not getattr(settings, name).get_secret_value():
-            additions.append(f"{name.upper()}={secrets.token_urlsafe(36)}\n")
-    if additions:
-        path = Path(".env")
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
-            stream.write("\n" + "".join(additions))
-    Settings().require_secrets()
-    print("Проектные секреты подготовлены; существующие значения сохранены.")
+    """Атомарно готовит отсутствующие project secrets, сохраняя старый API_KEY и пароли."""
+    prepare_project_secrets()
+    print(
+        "Проектные секреты подготовлены; существующие значения сохранены. "
+        "Upstream ключ не создавался."
+    )
 
 
 def docker(*arguments: str, input_text: str | None = None, check: bool = True):
-    """Запускает Docker без shell; stdout/stderr с возможными credentials не публикуются."""
+    """Запускает Docker без shell и скрытого вывода credentials из inspect/diagnostics."""
     result = subprocess.run(
         ["docker", *arguments],
         input=input_text,
@@ -54,24 +45,26 @@ def docker(*arguments: str, input_text: str | None = None, check: bool = True):
     if check and result.returncode:
         raise MapperError(
             "docker_command",
-            "Команда Docker/RabbitMQ не выполнена; проверьте состояние сервера",
+            "Docker недоступен или отклонил проверку; проверьте права и daemon",
             503,
         )
     return result
 
 
 def runtime_preflight() -> None:
-    """Проверяет существующую ai-shared и порт, допуская только уже работающий собственный API."""
+    """Проверяет Compose, сеть, host port, реальный XML и shared endpoint до записи секретов."""
     settings = Settings()
     docker("info")
+    version = docker("compose", "version", "--short").stdout.strip()
+    numbers = re.search(r"(\d+)\.(\d+)", version)
+    if numbers is None or tuple(map(int, numbers.groups())) < (2, 24):
+        raise MapperError("compose_version", "Требуется Docker Compose 2.24 или новее")
     docker("network", "inspect", "ai-shared")
-    if settings.app_port == 8083:
-        raise MapperError("port_reserved", "Порт 8083 зарезервирован для извлечения")
     with socket.socket() as connection:
         try:
             connection.bind((settings.app_bind, settings.app_port))
         except OSError:
-            result = docker(
+            ids = docker(
                 "ps",
                 "--filter",
                 "label=com.docker.compose.project=spec-mapper-ai",
@@ -79,108 +72,141 @@ def runtime_preflight() -> None:
                 "label=com.docker.compose.service=api",
                 "--format",
                 "{{.ID}}",
-            )
-            ids = result.stdout.split()
+            ).stdout.split()
             if len(ids) != 1:
                 raise MapperError("port_busy", "Порт web/API занят другим процессом") from None
             info = json.loads(docker("inspect", ids[0]).stdout)[0]
             bindings = info["NetworkSettings"]["Ports"].get("8000/tcp") or []
-            if not any(int(b["HostPort"]) == settings.app_port for b in bindings):
+            if not any(int(binding["HostPort"]) == settings.app_port for binding in bindings):
                 raise MapperError("port_busy", "Выбранный порт занят чужим приложением") from None
-    print(f"ai-shared доступна; проектный web-порт: {settings.app_port}")
+    parsed = XmlCatalogSource(
+        settings.data_directory, settings.max_xml_bytes, settings.duplicate_code_policy
+    )._read()
+    discover_broker(docker)
+    ids = docker(
+        "ps", "--filter", "label=com.docker.compose.service=shared-embedding", "--format", "{{.ID}}"
+    ).stdout.split()
+    addresses = []
+    for container_id in ids:
+        info = json.loads(docker("inspect", container_id).stdout)[0]
+        network = info["NetworkSettings"]["Networks"].get("ai-shared")
+        if network and network.get("IPAddress"):
+            addresses.append(network["IPAddress"])
+    if len(addresses) != 1:
+        raise MapperError(
+            "embedding_discovery", "Нужен работающий shared-embedding в ai-shared", 503
+        )
+    try:
+        with httpx.Client(timeout=10, trust_env=False) as client:
+            response = client.get(f"http://{addresses[0]}:8000/v1/models")
+            response.raise_for_status()
+            if settings.shared_embedding_model not in {m["id"] for m in response.json()["data"]}:
+                raise ValueError("Неверный alias")
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        raise MapperError(
+            "embedding_unavailable", "Shared embedding не подтвердил logical model alias", 503
+        ) from exc
+    print(
+        f"Preflight: порт {settings.app_port} свободен или принадлежит проекту; "
+        f"XML: {len(parsed.items)} позиций."
+    )
 
 
 def provision_rabbitmq() -> None:
-    """Создаёт только project user/vhost; не сбрасывает пароль и не меняет чужие permissions."""
+    """Создаёт только project user/vhost через Management API с password_hash вместо argv пароля."""
     settings = Settings()
     settings.require_secrets()
-    if settings.rabbitmq_user != "spec_mapper" or settings.rabbitmq_vhost != "spec_mapper":
-        raise MapperError(
-            "rabbit_namespace", "Автоподготовка разрешена только для namespace spec_mapper"
-        )
-    ids = docker(
-        "ps", "--filter", "label=com.docker.compose.service=rabbitmq", "--format", "{{.ID}}"
-    ).stdout.split()
-    matching = []
-    for container_id in ids:
-        info = json.loads(docker("inspect", container_id).stdout)[0]
-        if "ai-shared" in info["NetworkSettings"]["Networks"]:
-            matching.append(container_id)
-    if len(matching) != 1:
-        raise MapperError(
-            "rabbit_discovery", "Нужен один работающий shared RabbitMQ в ai-shared", 503
-        )
-    container_id = matching[0]
-
-    def control(*arguments: str):
-        """Вызывает rabbitmqctl только в обнаруженном broker и возвращает
-        структурированный вывод.
-        """
-        return docker("exec", container_id, "rabbitmqctl", "-q", *arguments)
-
-    users = json.loads(control("list_users", "--formatter=json").stdout)
-    user = next((u for u in users if u["user"] == settings.rabbitmq_user), None)
-    if user:
-        if user.get("tags") not in ([], "[]", ""):
-            raise MapperError(
-                "rabbit_ownership", "Существующий пользователь имеет чужую административную роль"
-            )
-        permissions = json.loads(
-            control("list_user_permissions", settings.rabbitmq_user, "--formatter=json").stdout
-        )
-        if any(p["vhost"] != settings.rabbitmq_vhost for p in permissions):
-            raise MapperError("rabbit_ownership", "Пользователь уже связан с другим проектом")
-    vhosts = json.loads(control("list_vhosts", "name", "--formatter=json").stdout)
-    exists = any(v["name"] == settings.rabbitmq_vhost for v in vhosts)
-    if exists:
-        permissions = json.loads(
-            control("list_permissions", "-p", settings.rabbitmq_vhost, "--formatter=json").stdout
-        )
-        admin_users = {u["user"] for u in users if "administrator" in str(u.get("tags", ""))}
-        if any(p["user"] not in admin_users | {settings.rabbitmq_user} for p in permissions):
-            raise MapperError("rabbit_ownership", "Vhost занят другим приложением")
-    if not user:
-        # Пароль передаётся только через stdin, не через host argv или вывод команды.
-        docker(
-            "exec",
-            "-i",
-            container_id,
-            "sh",
-            "-c",
-            'read -r project_password; rabbitmqctl -q add_user spec_mapper "$project_password"',
-            input_text=settings.rabbitmq_password.get_secret_value() + "\n",
-        )
-    else:
-        docker(
-            "exec",
-            "-i",
-            container_id,
-            "sh",
-            "-c",
-            "read -r project_password; "
-            'rabbitmqctl -q authenticate_user spec_mapper "$project_password"',
-            input_text=settings.rabbitmq_password.get_secret_value() + "\n",
-        )
-    if not exists:
-        control("add_vhost", settings.rabbitmq_vhost)
-    control(
-        "set_permissions", "-p", settings.rabbitmq_vhost, settings.rabbitmq_user, ".*", ".*", ".*"
+    provision_project_broker(settings, docker)
+    print(
+        "Выделенные user/vhost spec_mapper проверены; чужие credentials и lifecycle не изменялись."
     )
-    print("Проверены выделенные user/vhost spec_mapper; shared контейнер не перезапускался.")
+
+
+def check_live_stack() -> None:
+    """Отклоняет live tests до запуска project stack вместо каскада DNS/auth ошибок."""
+    settings = Settings()
+    settings.require_secrets()
+    result = docker(
+        "compose", "--env-file", ".env.example", "--env-file", ".env", "ps", "--format", "json"
+    ).stdout.strip()
+    rows = (
+        json.loads(result)
+        if result.startswith("[")
+        else [json.loads(line) for line in result.splitlines() if line]
+    )
+    running = {row["Service"] for row in rows if row.get("State") == "running"}
+    missing = {"postgres", "qdrant", "api", "worker"} - running
+    if missing:
+        raise MapperError(
+            "stack_not_running",
+            "Не запущены: "
+            + ", ".join(sorted(missing))
+            + ". Сначала выполните bash scripts/up.sh с реальным XML",
+            503,
+        )
+    try:
+        response = httpx.get(
+            settings.app_public_base_url.rstrip("/") + "/health/ready", timeout=20, trust_env=False
+        )
+        response.raise_for_status()
+        if not response.json().get("ready"):
+            raise ValueError("Not ready")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise MapperError(
+            "stack_not_ready", "Project stack ещё не ready; проверьте журналы api/worker", 503
+        ) from exc
+
+
+async def shared_health() -> None:
+    """До старта worker проверяет реальные embedding и RabbitMQ из сети ai-shared."""
+    container = build_container(Settings())
+    try:
+        await container.embeddings.identity()
+        await container.broker.connect()
+        print("Shared embedding и проектная авторизация RabbitMQ подтверждены.")
+    finally:
+        await container.close()
 
 
 async def enqueue_catalog(wait: bool = False) -> None:
-    """Публикует durable импорт из data; файлы и активный индекс проверяются в worker."""
+    """Ожидает административный импорт по его отдельному deadline, показывая безопасные counts."""
     container = build_container(Settings())
     try:
-        job = await container.jobs.create("system", f"startup:{int(time() // 30)}", {}, "catalog")
+        identity = await container.embeddings.identity()
+        source = await XmlCatalogSource(
+            container.settings.data_directory,
+            container.settings.max_xml_bytes,
+            container.settings.duplicate_code_policy,
+        ).read()
+        status = await container.catalog.status()
+        await container.jobs.cleanup()
+        key = "startup:" + digest(
+            [
+                source.source_hash,
+                identity.get("metadata_fingerprint", identity["fingerprint"]),
+                status.get("last_successful_sync"),
+            ]
+        )
+        job = await container.jobs.create("system", key, {}, "catalog")
+        while job["state"] == "failed":
+            key = "retry:" + digest([key, job["id"]])
+            job = await container.jobs.create("system", key, {}, "catalog")
         await container.broker.publish(job["id"])
         await container.jobs.dispatched(job["id"])
-        print("Запущено задание импорта каталога: " + job["id"])
+        print("Задание импорта: " + job["id"])
+        last_progress = None
         if wait:
-            deadline = time() + container.settings.draft_ttl_seconds
-            while time() < deadline:
+            while time() < job["expires_at"]:
                 current = await container.jobs.get(job["id"], "system")
+                progress = current["data"].get("catalog_progress", {})
+                bucket = (current["stage"], progress.get("processed", 0) // 1000)
+                if bucket != last_progress:
+                    print(
+                        f"{current['stage']}: "
+                        f"{progress.get('processed', 0)}/{progress.get('total', 0)}",
+                        flush=True,
+                    )
+                    last_progress = bucket
                 if current["state"] == "complete":
                     status = await container.catalog.status()
                     print(f"Импорт завершён: {status['count']} позиций")
@@ -194,16 +220,28 @@ async def enqueue_catalog(wait: bool = False) -> None:
                         503,
                     )
                 await asyncio.sleep(3)
-            raise MapperError("catalog_import_timeout", "Истекло время ожидания импорта", 503)
+            raise MapperError(
+                "catalog_import_timeout", "Истекло отдельное время ожидания каталога", 503
+            )
     finally:
         await container.close()
 
 
 def main() -> None:
-    """Выбирает одну явно запрошенную операторскую операцию и печатает только безопасные ошибки."""
+    """Выполняет одну операторскую операцию и выдаёт только безопасную предметную диагностику."""
     parser = argparse.ArgumentParser(description="Операции spec-mapper-ai")
-    parser.add_argument("command", choices=["secrets", "preflight", "rabbitmq", "import-catalog"])
-    parser.add_argument("--wait", action="store_true", help="Дождаться завершения импорта каталога")
+    parser.add_argument(
+        "command",
+        choices=[
+            "secrets",
+            "preflight",
+            "rabbitmq",
+            "import-catalog",
+            "check-live",
+            "shared-health",
+        ],
+    )
+    parser.add_argument("--wait", action="store_true", help="Дождаться завершения импорта")
     args = parser.parse_args()
     try:
         if args.command == "secrets":
@@ -212,10 +250,18 @@ def main() -> None:
             runtime_preflight()
         elif args.command == "rabbitmq":
             provision_rabbitmq()
+        elif args.command == "check-live":
+            check_live_stack()
+        elif args.command == "shared-health":
+            asyncio.run(shared_health())
         else:
             asyncio.run(enqueue_catalog(args.wait))
     except MapperError as exc:
         raise SystemExit(f"{exc.code}: {exc.message}") from None
+    except (ValidationError, ValueError):
+        raise SystemExit(
+            "configuration_invalid: проверьте имена, типы и длину секретов в конфигурации"
+        ) from None
 
 
 if __name__ == "__main__":

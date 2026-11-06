@@ -44,6 +44,11 @@ def create_app(container: Container | None = None) -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/openapi.json",
+        servers=[{"url": container.settings.app_public_base_url}],
+        description=(
+            "Вторая ступень обработки спецификаций: "
+            "JSON → Top-5 → ручной выбор → утверждение для 1С."
+        ),
     )
     app.state.container = container
     app.add_middleware(
@@ -55,6 +60,11 @@ def create_app(container: Container | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=ROOT / "web" / "templates")
     app.mount("/static", StaticFiles(directory=ROOT / "web" / "static"), name="static")
     app.include_router(router)
+
+    @app.get("/docs", include_in_schema=False)
+    async def api_docs(request: Request):
+        """Отображает локальную страницу OpenAPI без CDN и без передачи серверных ключей."""
+        return templates.TemplateResponse(request=request, name="api_docs.html", context={})
 
     @app.exception_handler(MapperError)
     async def expected_error(request: Request, error: MapperError) -> JSONResponse:

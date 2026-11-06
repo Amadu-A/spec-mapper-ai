@@ -12,8 +12,10 @@ from uuid import uuid4
 from sqlalchemy import delete, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from src.domain.models import TERMINAL, CatalogItem, MapperError, digest
+from src.domain.embedding import compatible_embedding
+from src.domain.models import TERMINAL, CatalogItem, MapperError, digest, ensure_approvable
 from src.infrastructure.database import (
+    ApprovalRow,
     CatalogEntryRow,
     CatalogStateRow,
     CatalogVersionRow,
@@ -62,7 +64,12 @@ class SqlJobs:
                     request_hash=request_hash,
                     kind=kind,
                     created_at=self.clock(),
-                    expires_at=self.clock() + self.settings.draft_ttl_seconds,
+                    expires_at=self.clock()
+                    + (
+                        self.settings.catalog_import_timeout_seconds
+                        if kind == "catalog"
+                        else self.settings.draft_ttl_seconds
+                    ),
                     data={
                         "source_job_id": payload.get("source_job_id"),
                         "source": payload.get("document"),
@@ -243,7 +250,81 @@ class SqlJobs:
     async def cleanup(self) -> None:
         """Удаляет временные mapping_jobs, сохраняя постоянный каталог и его векторы."""
         async with self.sessions.begin() as session:
+            await session.execute(
+                delete(ApprovalRow).where(
+                    ApprovalRow.job_id.in_(
+                        select(JobRow.id).where(JobRow.expires_at <= self.clock())
+                    )
+                )
+            )
             await session.execute(delete(JobRow).where(JobRow.expires_at <= self.clock()))
+
+    async def approve(
+        self, job_id: str, owner: str, revision: int, key: str, snapshot: dict
+    ) -> dict:
+        """Сериализует approve/selection и сохраняет неизменяемый снимок в одной транзакции."""
+        async with self.sessions.begin() as session:
+            row = await session.scalar(select(JobRow).where(JobRow.id == job_id).with_for_update())
+            self._check(row, owner)
+            existing = await session.get(ApprovalRow, job_id)
+            if existing is not None:
+                if existing.revision != revision:
+                    raise MapperError("revision_conflict", "Утверждена другая revision", 409)
+                return job_dict(row)
+            if row.revision != revision:
+                raise MapperError(
+                    "revision_conflict", "Результат уже изменён; обновите revision", 409
+                )
+            ensure_approvable(row.state, row.data["rows"])
+            approved_at = self.clock()
+            approval = {
+                "approved_at": approved_at,
+                "approved_revision": revision,
+                "owner": owner,
+                "catalog_version": row.data["catalog_version"],
+            }
+            snapshot = {
+                **deepcopy(snapshot),
+                "status": "approved",
+                "approval": approval,
+                "approved_at": approved_at,
+                "approved_revision": revision,
+            }
+            for item in snapshot["items"]:
+                item["matching"]["approved"] = True
+            data = {**deepcopy(row.data), "approval": approval}
+            changed = await session.execute(
+                update(JobRow)
+                .where(
+                    JobRow.id == job_id,
+                    JobRow.revision == revision,
+                    JobRow.state.in_(("complete", "ready_for_review")),
+                    JobRow.expires_at > self.clock(),
+                )
+                .values(data=data, state="approved", stage="approved")
+            )
+            if changed.rowcount != 1:
+                raise MapperError("revision_conflict", "Результат изменён другим запросом", 409)
+            session.add(
+                ApprovalRow(
+                    job_id=job_id,
+                    owner=owner,
+                    revision=revision,
+                    approved_at=approved_at,
+                    idempotency_hash=digest(key),
+                    snapshot=snapshot,
+                )
+            )
+        return await self.get(job_id, owner)
+
+    async def approved(self, job_id: str, owner: str) -> dict:
+        """Выдаёт неизменяемый финальный JSON после проверки владельца и срока."""
+        await self.get(job_id, owner)
+        async with self.sessions() as session:
+            approved = await session.get(ApprovalRow, job_id)
+            if approved is None or approved.owner != owner:
+                raise MapperError("not_approved", "Результат ещё не утверждён", 409)
+            return deepcopy(approved.snapshot)
 
 
 class SqlCatalog:
@@ -330,7 +411,34 @@ class SqlCatalog:
                 session.add(state)
             if state.active != version:
                 state.previous, state.active = state.active, version
+            snapshot = await session.get(CatalogVersionRow, version)
+            if snapshot is not None:
+                snapshot.metadata_json = {**snapshot.metadata_json, "published": True}
             state.last_successful_sync, state.last_error = time(), None
+
+    async def resumable(self, source_hash: str, identity: dict) -> dict | None:
+        """Возвращает только непубликовавшийся снимок с совместимыми XML и embedding identity."""
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(CatalogVersionRow)
+                .where(
+                    CatalogVersionRow.metadata_json["source_hash"].as_string() == source_hash,
+                )
+                .order_by(CatalogVersionRow.created_at.desc())
+            )
+            for row in rows:
+                if (
+                    not row.metadata_json.get("published")
+                    and "resume_offset" in row.metadata_json
+                    and compatible_embedding(
+                        row.metadata_json.get(
+                            "embedding_identity", {"fingerprint": row.metadata_json["fingerprint"]}
+                        ),
+                        identity,
+                    )
+                ):
+                    return {"version": row.id, **deepcopy(row.metadata_json)}
+        return None
 
     async def update_stage(self, version: str, metadata: dict) -> None:
         """Фиксирует окончательные counts и fingerprint до публикации активного указателя."""
@@ -350,11 +458,23 @@ class SqlCatalog:
                 select(JobRow.data["catalog_version"].as_string()).where(JobRow.expires_at > time())
             )
             protected.update(referenced)
+            bases = await session.scalars(
+                select(JobRow.data["catalog_progress"]["base_version"].as_string()).where(
+                    JobRow.expires_at > time()
+                )
+            )
+            protected.update(bases)
             rows = await session.scalars(
                 select(CatalogVersionRow).where(CatalogVersionRow.created_at < time() - 3600)
             )
             return [
-                {"version": row.id, **row.metadata_json} for row in rows if row.id not in protected
+                {"version": row.id, **row.metadata_json}
+                for row in rows
+                if row.id not in protected
+                and not (
+                    not row.metadata_json.get("published")
+                    and row.metadata_json.get("updated_at", 0) > time() - 86400
+                )
             ]
 
     async def discard_version(self, version: str) -> None:

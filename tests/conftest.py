@@ -85,6 +85,10 @@ class FakeIndex:
         assert collection not in self.collections
         self.collections[collection] = {}
 
+    async def exists(self, collection):
+        """Проверяет наличие staging для offline проверки восстановления импорта."""
+        return collection in self.collections
+
     async def clone(self, source, target):
         """Копирует готовый индекс без новых upsert для проверки incremental контракта."""
         assert target not in self.collections
@@ -162,7 +166,7 @@ async def system(tmp_path, settings, source):
     embeddings, index, catalog_source = FakeEmbeddings(), FakeIndex(), FakeSource([item])
     sync = SynchronizeCatalogUseCase(catalog_source, container.catalog, embeddings, index, 2)
 
-    async def progress(stage):
+    async def progress(stage, **details):
         """Принимает этапы standalone test импорта без HTTP и durable job."""
         return None
 

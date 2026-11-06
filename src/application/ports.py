@@ -55,6 +55,16 @@ class JobRepository(Protocol):
         """Удаляет только временные задания и связанные исходные данные после TTL."""
         ...
 
+    async def approve(
+        self, job_id: str, owner: str, revision: int, key: str, snapshot: dict
+    ) -> dict:
+        """Атомарно фиксирует целое задание и единственный immutable snapshot без продления TTL."""
+        ...
+
+    async def approved(self, job_id: str, owner: str) -> dict:
+        """Возвращает только утверждённый snapshot с проверкой owner и текущего TTL."""
+        ...
+
 
 class CatalogRepository(Protocol):
     """Снимки номенклатуры и постоянный кэш векторов, независимые от TTL заданий."""
@@ -81,6 +91,10 @@ class CatalogRepository(Protocol):
 
     async def update_stage(self, version: str, metadata: dict) -> None:
         """Сохраняет проверенные финальные метаданные уже зарегистрированного staging снимка."""
+        ...
+
+    async def resumable(self, source_hash: str, identity: dict) -> dict | None:
+        """Находит незавершённый staging того же XML и identity для восстановления checkpoints."""
         ...
 
     async def obsolete_versions(self) -> list[dict]:
@@ -141,6 +155,10 @@ class VectorIndex(Protocol):
 
     async def create(self, collection: str, dimension: int) -> None:
         """Создаёт новую коллекцию, не удаляя активную."""
+        ...
+
+    async def exists(self, collection: str) -> bool:
+        """Определяет наличие зарегистрированного staging после сбоя создания/клонирования."""
         ...
 
     async def clone(self, source: str, target: str) -> None:

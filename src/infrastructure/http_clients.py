@@ -153,4 +153,11 @@ class SharedEmbeddings:
             "probe": digest([round(v, 6) for v in probe]),
             "preprocessing": "nfc-space-v1",
         }
-        return {**identity, "fingerprint": digest(identity)}
+        return {
+            **identity,
+            "fingerprint": digest(identity),
+            "metadata_fingerprint": digest(
+                {key: value for key, value in identity.items() if key != "probe"}
+            ),
+            "probe_vector": probe,
+        }

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Boolean, Float, Index, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -41,6 +41,20 @@ class CatalogVersionRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     metadata_json: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[float] = mapped_column(Float)
+
+
+class ApprovalRow(Base):
+    """Один неизменяемый утверждённый snapshot задания; удаляется только вместе с TTL задания."""
+
+    __tablename__ = "mapping_approvals"
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner: Mapped[str] = mapped_column(String(80))
+    revision: Mapped[int] = mapped_column(Integer)
+    approved_at: Mapped[float] = mapped_column(Float)
+    idempotency_hash: Mapped[str] = mapped_column(String(64))
+    snapshot: Mapped[dict] = mapped_column(JSON)
 
 
 class CatalogEntryRow(Base):

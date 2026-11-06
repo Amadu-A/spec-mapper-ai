@@ -14,7 +14,7 @@ pytestmark = pytest.mark.e2e
 
 
 async def test_browser_import_select_reload_and_export(system, source, tmp_path):
-    """Проверяет upload, Top-K, ручной выбор, reload, фильтр и скачивание Excel в браузере."""
+    """Проверяет ревью, ошибки сети/revision, утверждение и экспорты в настоящем браузере."""
     import socket
 
     container, *_ = system
@@ -55,7 +55,8 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
             await asyncio.sleep(0.05)
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
-            page = await browser.new_page(viewport={"width": 1600, "height": 1100})
+            context = await browser.new_context(viewport={"width": 1600, "height": 1100})
+            page = await context.new_page()
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             await page.goto(f"http://127.0.0.1:{port}/")
@@ -100,6 +101,63 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
             assert not errors
             await page.set_viewport_size({"width": 390, "height": 844})
             await page.screenshot(path="test-results/browser-mobile.png", full_page=True)
+            assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            await page.locator("[data-status]").select_option("all")
+            await expect(page.locator("[data-rows] tr")).to_have_count(2)
+            first_button = page.get_by_role(
+                "button", name="Выбрать соответствие для строки 1", exact=True
+            )
+            await first_button.click()
+            await page.locator("[data-no-match]").check()
+
+            async def disconnect(route):
+                """Имитирует потерю соединения до доставки записи, не подменяя успешный ответ."""
+                await route.abort("failed")
+
+            await page.route("**/rows/0/selection", disconnect)
+            await page.locator("[data-save-selection]").click()
+            await expect(page.locator("[data-drawer-error]")).to_contain_text("Нет соединения")
+            await expect(page.locator("[data-save-selection]")).to_be_enabled()
+            await page.unroute("**/rows/0/selection", disconnect)
+            other = await page.context.new_page()
+            await other.goto(page.url)
+            await other.get_by_role(
+                "button", name="Выбрать соответствие для строки 1", exact=True
+            ).click()
+            await other.locator("[data-no-match]").check()
+            await other.locator("[data-save-selection]").click()
+            await expect(other.locator("[data-drawer]")).not_to_be_visible()
+            await page.locator("[data-save-selection]").click()
+            await expect(page.locator("[data-drawer-error]")).to_be_visible()
+            await expect(page.locator("[data-save-selection]")).to_be_disabled()
+            await page.keyboard.press("Escape")
+            await first_button.click()
+            await page.locator("[data-no-match]").check()
+            await page.locator("[data-save-selection]").click()
+            await expect(page.locator("[data-drawer]")).not_to_be_visible()
+            await expect(page.locator("[data-approve]")).to_be_enabled()
+            await page.locator("[data-approve]").click()
+            await expect(page.locator("[data-approval-status]")).to_contain_text(
+                "Результат утверждён"
+            )
+            await expect(first_button).to_be_disabled()
+            await page.reload()
+            await expect(page.locator("[data-approval-status]")).to_contain_text(
+                "Результат утверждён"
+            )
+            async with page.expect_download() as downloaded:
+                await page.locator("[data-export='approved.json']").click()
+            download = await downloaded.value
+            await download.save_as(tmp_path / "approved.json")
+            approved = json.loads((tmp_path / "approved.json").read_text("utf-8"))
+            assert approved["status"] == "approved"
+            assert approved["items"][0]["onec"] is None
+            for name, value in source["items"][0].items():
+                assert approved["items"][0][name] == value
+            await page.screenshot(path="test-results/browser-approved-mobile.png", full_page=True)
+            await other.goto(f"http://127.0.0.1:{port}/docs")
+            await expect(other.locator("[data-api-routes]")).to_contain_text("/api/v1/mappings")
+            assert not errors
             await browser.close()
     finally:
         server.should_exit = True

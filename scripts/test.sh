@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 uv sync --locked
+if [[ "${1:-}" == '--live' ]]; then
+  uv run --no-sync python -m src.cli check-live
+fi
 uv run --no-sync ruff check src tests alembic
 uv run --no-sync ruff format --check src tests alembic
 uv run --no-sync playwright install chromium

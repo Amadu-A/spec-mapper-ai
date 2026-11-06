@@ -53,9 +53,130 @@ class MappingStatus(BaseModel):
     created_at: float
     expires_at: float
     revision: int
+    approved_at: float | None = None
+    approved_revision: int | None = None
     error_code: str | None
     total: int
     processed: int
+    unresolved_count: int = 0
     counts: dict[str, int]
     catalog_version: str | None
     links: dict[str, str]
+
+
+class Approval(BaseModel):
+    """Ожидаемая версия целого результата для атомарного общего утверждения."""
+
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=0)
+
+
+class CatalogPosition(BaseModel):
+    """Публичная позиция: код строкой, внутренний UUID и отдельная реальная ссылка 1С."""
+
+    guid: str
+    code: str
+    name: str
+    unit: str
+    onec_guid: str | None
+    article: str
+    brand: str
+    manufacturer: str
+    group: str
+    active: bool
+    catalog_version: str | None = None
+
+
+class CandidateResult(BaseModel):
+    """Кандидат Top-K с раздельными cosine, рангом и причинами ограничений."""
+
+    item: CatalogPosition
+    score: float
+    rank: float
+    conflicts: list[str]
+    evidence: list[str]
+
+
+class CandidatePage(BaseModel):
+    """Кандидаты одной стабильной строки документа."""
+
+    row_index: int
+    candidates: list[CandidateResult]
+
+
+class CatalogSearch(BaseModel):
+    """Ограниченная страница поиска по всему активному каталогу."""
+
+    items: list[CatalogPosition]
+
+
+class MappingRow(BaseModel):
+    """Исходная строка, независимый выбор и результаты автоматического подбора."""
+
+    index: int
+    source: SourceRow
+    selection: CatalogPosition | None
+    status: Literal["matched", "review", "not_found", "manual"]
+    confirmed: bool
+    manually_reviewed: bool
+    candidates: list[CandidateResult]
+
+
+class MappingResult(MappingStatus):
+    """Готовая страница таблицы с totals всего задания и сохранённой revision."""
+
+    filtered_total: int
+    offset: int
+    items: list[MappingRow]
+    algorithm_version: str
+    source_hash: str
+
+
+class MatchingExport(BaseModel):
+    """Признаки ревью и общего утверждения; score ручного выбора может отсутствовать."""
+
+    status: Literal["matched", "review", "not_found", "manual"]
+    confirmed: bool
+    manually_reviewed: bool
+    approved: bool
+    score: float | None
+
+
+class ExportRow(SourceRow):
+    """Исходная пятёрка с индексом и отдельным объектом 1С либо явным null."""
+
+    index: int
+    onec: CatalogPosition | None
+    matching: MatchingExport
+
+
+class MappingExport(BaseModel):
+    """Полный предварительный экспорт для клиента интеграции."""
+
+    job_id: str
+    source_job_id: str | None
+    source_hash: str
+    catalog_version: str
+    algorithm_version: str
+    status: str
+    approved_at: float | None
+    approved_revision: int | None
+    items: list[ExportRow]
+
+
+class ApprovalInfo(BaseModel):
+    """Неизменяемые реквизиты общего утверждения; не содержат значение API-ключа."""
+
+    approved_at: float
+    approved_revision: int
+    owner: str
+    catalog_version: str
+
+
+class ApprovedExport(MappingExport):
+    """Контракт финального JSON, передаваемого в 1С после общего утверждения."""
+
+    status: Literal["approved"]
+    approved_at: float
+    approved_revision: int
+    approval: ApprovalInfo

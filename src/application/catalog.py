@@ -1,18 +1,20 @@
 # src/application/catalog.py
-"""Общая синхронизация XML/будущего адаптера 1С с инкрементальным embedding-кэшем."""
+"""Восстанавливаемая синхронизация каталога: неизменяемый staging, vector cache и atomic publish."""
 
 from __future__ import annotations
 
+from time import time
 from uuid import uuid4
 
 from src.application.ports import CatalogRepository, CatalogSource, Embeddings, VectorIndex
+from src.domain.embedding import compatible_embedding
 from src.domain.matching import normalize
 from src.domain.models import MapperError, digest
 from src.observability import timed
 
 
 class SynchronizeCatalogUseCase:
-    """Строит новый снимок отдельно от активного и публикует только проверенный индекс."""
+    """Публикует проверенный снимок и возобновляет обработку с сохранённой пачки."""
 
     def __init__(
         self,
@@ -22,118 +24,105 @@ class SynchronizeCatalogUseCase:
         index: VectorIndex,
         batch_size: int,
     ) -> None:
-        """Получает заменяемые порты; ни HTTP, ни SQLAlchemy внутри use-case не создаются."""
+        """Принимает порты без создания конкретных SQL/HTTP клиентов внутри application."""
         self.source, self.catalog, self.embeddings, self.index = source, catalog, embeddings, index
         self.batch_size = batch_size
 
     @timed("catalog_synchronize")
     async def execute(self, progress) -> dict:
-        """Не векторизует неизменённые позиции; при сбое сохраняет старый каталог и alias."""
+        """Восстанавливает совместимый staging; при отказе сохраняет прежний активный индекс."""
         try:
             async with self.catalog.lock():
                 await progress("reading_xml")
                 source = await self.source.read()
                 identity = await self.embeddings.identity()
                 previous = await self.catalog.status()
-                if (
-                    previous.get("source_hash") == source.source_hash
-                    and previous.get("fingerprint") == identity["fingerprint"]
-                ):
+                usable = (
+                    previous.get("ready")
+                    and await self.index.exists(previous["collection"])
+                    and await self.index.count(previous["collection"]) == previous["count"]
+                )
+                compatible = usable and compatible_embedding(
+                    previous.get("embedding_identity", {"fingerprint": previous["fingerprint"]}),
+                    identity,
+                )
+                if compatible and not previous.get("embedding_identity"):
+                    previous["embedding_identity"] = identity
+                    metadata = {
+                        key: value
+                        for key, value in previous.items()
+                        if key not in {"ready", "version", "last_successful_sync", "last_error"}
+                    }
+                    await self.catalog.update_stage(previous["version"], metadata)
+                if compatible and previous.get("source_hash") == source.source_hash:
                     await self.catalog.activate(previous["version"])
                     return await self.catalog.status()
-                version = str(uuid4())
-                collection = "spec_mapper_" + version.replace("-", "")
-                metadata = {
-                    "collection": collection,
-                    "count": len(source.items),
-                    "source_hash": source.source_hash,
-                    "fingerprint": identity["fingerprint"],
-                    "dimension": identity["dimension"],
-                    "warnings": source.warnings,
-                }
-                # Ledger создаётся до Qdrant, чтобы после crash остался адрес staging для очистки.
-                await self.catalog.stage(version, source.items, metadata)
-                incremental = previous.get("fingerprint") == identity["fingerprint"]
-                removed = []
-                if incremental:
-                    await self.index.clone(previous["collection"], collection)
-                    old_ids = set(await self.catalog.guids(previous["version"]))
-                    new_ids = {item.guid for item in source.items}
-                    removed = sorted(old_ids - new_ids)
-                    for start in range(0, len(removed), 500):
-                        await self.index.delete_points(collection, removed[start : start + 500])
+                saved = await self.catalog.resumable(source.source_hash, identity)
+                if saved:
+                    metadata = dict(saved)
+                    version = metadata.pop("version")
+                    metadata.setdefault("embedding_identity", identity)
                 else:
-                    await self.index.create(collection, identity["dimension"])
-                computed = indexed = 0
-                for offset in range(0, len(source.items), self.batch_size):
-                    await progress("indexing")
-                    batch = source.items[offset : offset + self.batch_size]
-                    if incremental:
-                        old = await self.catalog.items(
-                            previous["version"], [item.guid for item in batch]
-                        )
-                        batch = [
-                            item
-                            for item in batch
-                            if item.guid not in old
-                            or old[item.guid].content_hash != item.content_hash
-                        ]
-                    if not batch:
-                        continue
-                    keys = [digest([identity["fingerprint"], item.content_hash]) for item in batch]
-                    vectors = await self.catalog.vectors(keys)
-                    missing = [
-                        (key, item)
-                        for key, item in zip(keys, batch, strict=True)
-                        if key not in vectors
-                    ]
-                    if missing:
-                        texts = [
-                            normalize(
-                                " ".join((item.name, item.article, item.brand, item.manufacturer))
-                            )
-                            for _, item in missing
-                        ]
-                        embedded = await self.embeddings.embed(texts)
-                        if any(len(v) != identity["dimension"] for v in embedded):
-                            raise MapperError(
-                                "embedding_changed",
-                                "Размерность модели изменилась во время импорта",
-                                503,
-                            )
-                        new = dict(zip([key for key, _ in missing], embedded, strict=True))
-                        await self.catalog.cache_vectors(new)
-                        vectors.update(new)
-                        computed += len(missing)
-                    await self.index.put(
-                        collection,
-                        [
-                            {"id": item.guid, "vector": vectors[key]}
-                            for key, item in zip(keys, batch, strict=True)
-                        ],
-                    )
-                    indexed += len(batch)
-                if await self.index.count(collection) != len(source.items):
+                    version = str(uuid4())
+                    incremental = bool(compatible)
+                    metadata = {
+                        "collection": "spec_mapper_" + version.replace("-", ""),
+                        "count": len(source.items),
+                        "source_hash": source.source_hash,
+                        "fingerprint": previous["fingerprint"]
+                        if incremental
+                        else identity["fingerprint"],
+                        "embedding_identity": previous["embedding_identity"]
+                        if incremental
+                        else identity,
+                        "dimension": identity["dimension"],
+                        "warnings": source.warnings,
+                        "statistics": source.statistics,
+                        "mode": "incremental" if incremental else "full",
+                        "base_version": previous["version"] if incremental else None,
+                        "base_collection": previous["collection"] if incremental else None,
+                        "resume_offset": 0,
+                        "initialized": False,
+                        "published": False,
+                        "embedded_count": 0,
+                        "indexed_count": 0,
+                        "removed_count": 0,
+                        "updated_at": time(),
+                    }
+                    await self.catalog.stage(version, source.items, metadata)
+                await progress(
+                    "preparing_index",
+                    catalog_version=version,
+                    base_version=metadata.get("base_version"),
+                    processed=metadata["resume_offset"],
+                    total=len(source.items),
+                )
+                if not metadata["initialized"]:
+                    await self._initialize(version, metadata, source.items)
+                await self._index(version, metadata, source.items, progress)
+                if await self.index.count(metadata["collection"]) != len(source.items):
                     raise MapperError(
                         "index_count", "Число точек Qdrant не совпало с каталогом", 503
                     )
-                metadata = {
-                    "collection": collection,
-                    "count": len(source.items),
-                    "source_hash": source.source_hash,
-                    "fingerprint": identity["fingerprint"],
-                    "dimension": identity["dimension"],
-                    "warnings": source.warnings,
-                    "embedded_count": computed,
-                    "reused_count": len(source.items) - computed,
-                    "indexed_count": indexed,
-                    "removed_count": len(removed),
-                    "mode": "incremental" if incremental else "full",
-                }
+                if not compatible_embedding(
+                    metadata["embedding_identity"], await self.embeddings.identity()
+                ):
+                    raise MapperError(
+                        "embedding_changed", "Модель изменилась во время индексации", 503
+                    )
+                metadata.update(
+                    reused_count=len(source.items) - metadata["embedded_count"], updated_at=time()
+                )
                 await self.catalog.update_stage(version, metadata)
-                await progress("publishing")
+                await progress(
+                    "publishing",
+                    catalog_version=version,
+                    base_version=metadata.get("base_version"),
+                    processed=len(source.items),
+                    total=len(source.items),
+                )
                 async with self.catalog.guard():
-                    old_collection = await self.index.switch(collection)
+                    old_collection = await self.index.switch(metadata["collection"])
                     try:
                         await self.catalog.activate(version)
                     except BaseException:
@@ -144,17 +133,91 @@ class SynchronizeCatalogUseCase:
             await self.catalog.sync_error(exc.code)
             raise
 
+    async def _initialize(self, version: str, metadata: dict, items: list) -> None:
+        """Восстанавливает создание только unpublished staging; активную коллекцию не удаляет."""
+        collection = metadata["collection"]
+        if await self.index.exists(collection):
+            await self.index.remove(collection)
+        if metadata["mode"] == "incremental":
+            await self.index.clone(metadata["base_collection"], collection)
+            old_ids = set(await self.catalog.guids(metadata["base_version"]))
+            removed = sorted(old_ids - {item.guid for item in items})
+            for start in range(0, len(removed), 500):
+                await self.index.delete_points(collection, removed[start : start + 500])
+            metadata["removed_count"] = len(removed)
+        else:
+            await self.index.create(collection, metadata["dimension"])
+        metadata.update(initialized=True, updated_at=time())
+        await self.catalog.update_stage(version, metadata)
+
+    async def _index(self, version: str, metadata: dict, items: list, progress) -> None:
+        """Фиксирует offset после durable upsert; повтор незавершённой пачки идемпотентен."""
+        for start in range(metadata["resume_offset"], len(items), self.batch_size):
+            batch = items[start : start + self.batch_size]
+            if metadata["mode"] == "incremental":
+                old = await self.catalog.items(
+                    metadata["base_version"], [item.guid for item in batch]
+                )
+                batch = [
+                    item
+                    for item in batch
+                    if item.guid not in old or old[item.guid].content_hash != item.content_hash
+                ]
+            if batch:
+                keys = [digest([metadata["fingerprint"], item.content_hash]) for item in batch]
+                vectors = await self.catalog.vectors(keys)
+                missing = [
+                    (key, item) for key, item in zip(keys, batch, strict=True) if key not in vectors
+                ]
+                if missing:
+                    texts = [
+                        normalize(
+                            " ".join((item.name, item.article, item.brand, item.manufacturer))
+                        )
+                        for _, item in missing
+                    ]
+                    embedded = await self.embeddings.embed(texts)
+                    if any(len(vector) != metadata["dimension"] for vector in embedded):
+                        raise MapperError(
+                            "embedding_changed",
+                            "Размерность модели изменилась во время импорта",
+                            503,
+                        )
+                    new = dict(zip([key for key, _ in missing], embedded, strict=True))
+                    await self.catalog.cache_vectors(new)
+                    vectors.update(new)
+                    metadata["embedded_count"] += len(missing)
+                await self.index.put(
+                    metadata["collection"],
+                    [
+                        {"id": item.guid, "vector": vectors[key]}
+                        for key, item in zip(keys, batch, strict=True)
+                    ],
+                )
+                metadata["indexed_count"] += len(batch)
+            metadata.update(
+                resume_offset=min(start + self.batch_size, len(items)), updated_at=time()
+            )
+            await self.catalog.update_stage(version, metadata)
+            await progress(
+                "indexing",
+                catalog_version=version,
+                base_version=metadata.get("base_version"),
+                processed=metadata["resume_offset"],
+                total=len(items),
+            )
+
 
 class PruneCatalogUseCase:
-    """Собирает только устаревшие версии каталога, сохраняя active, rollback и ссылки живых jobs."""
+    """Собирает устаревшие версии, сохраняя active, rollback и все ссылки живых заданий."""
 
     def __init__(self, catalog: CatalogRepository, index: VectorIndex) -> None:
-        """Получает порты тех же private систем без доступа к XML и volumes."""
+        """Получает порты собственных систем без доступа к XML или persistent volumes."""
         self.catalog, self.index = catalog, index
 
     @timed("catalog_prune")
     async def execute(self) -> None:
-        """Удаляет только зарегистрированные project snapshots старше часа, под advisory lock."""
+        """Удаляет только зарегистрированные obsolete snapshots под lock публикации."""
         async with self.catalog.lock():
             async with self.catalog.guard():
                 for version in await self.catalog.obsolete_versions():

@@ -35,6 +35,7 @@ PARAMETERS = {
     "МПа": r"(\d+(?:[.,]\d+)?)\s*(?:мпа|mpa)",
     "расход": r"(\d+(?:[.,]\d+)?)\s*м[³3]/ч",
     "напор": r"h\s*=?\s*(\d+(?:[.,]\d+)?)\s*м",
+    "температура": r"([+-]?\d+(?:[.,]\d+)?)\s*°\s*[cс]",
 }
 RANGE_NUMBER = r"(\d+(?:[.,]\d+)?)\s*[-–—…]\s*(\d+(?:[.,]\d+)?)"
 RANGE_PARAMETERS = {
@@ -45,6 +46,10 @@ RANGE_PARAMETERS = {
     "МПа": rf"{RANGE_NUMBER}\s*(?:мпа|mpa)",
     "расход": rf"{RANGE_NUMBER}\s*м[³3]/ч",
     "напор": rf"h\s*=?\s*{RANGE_NUMBER}\s*м",
+    "температура": (
+        r"([+-]?\d+(?:[.,]\d+)?)\s*(?:[-–—…]|\.{2,3})\s*"
+        r"([+-]?\d+(?:[.,]\d+)?)\s*°\s*[cс]"
+    ),
 }
 
 
@@ -64,9 +69,11 @@ def parameters(text: str) -> dict[str, set[float]]:
     text = normalize(text)
     result = {}
     for key, pattern in PARAMETERS.items():
-        values = {float(v.replace(",", ".")) for v in re.findall(pattern, text)}
+        values = set()
         for bounds in re.findall(RANGE_PARAMETERS[key], text):
             values.update(float(value.replace(",", ".")) for value in bounds)
+        remaining = re.sub(RANGE_PARAMETERS[key], " ", text)
+        values.update(float(value.replace(",", ".")) for value in re.findall(pattern, remaining))
         if values:
             result[key] = values
     return result
@@ -76,6 +83,8 @@ def rerank(source: dict, hits: list[tuple[CatalogItem, float]]) -> list[Candidat
     """Штрафует конфликтующие единицы, параметры и марки, сохраняя исходный cosine."""
     query = normalize(source["Caption"])
     expected = parameters(query)
+    article = re.search(r"(?:арт(?:икул)?\.?|article)\s*[:=№]?\s*([a-zа-я0-9][\w./-]*)", query)
+    model = re.search(r"(?:модель|model)\s*[:=]?\s*([a-zа-я0-9][\w./-]*)", query)
     known_brands = {
         normalize(value) for item, _ in hits for value in (item.brand, item.manufacturer) if value
     }
@@ -86,6 +95,12 @@ def rerank(source: dict, hits: list[tuple[CatalogItem, float]]) -> list[Candidat
         title = normalize(item.name)
         actual = parameters(title)
         conflicts, evidence = [], []
+        if article and item.article and article.group(1) != normalize(item.article):
+            conflicts.append("Различается артикул")
+        elif article and not item.article:
+            evidence.append("Артикул не подтверждён")
+        if model and not re.search(r"(?<!\w)" + re.escape(model.group(1)) + r"(?!\w)", title):
+            evidence.append("Модель не подтверждена")
         item_text = normalize(" ".join((item.name, item.article, item.brand, item.manufacturer)))
         if requested_brands and not all(brand in item_text for brand in requested_brands):
             conflicts.append("Различается марка или производитель")

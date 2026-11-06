@@ -14,7 +14,7 @@ from src.infrastructure.http_clients import HttpExtractionSource, SharedEmbeddin
 from src.infrastructure.qdrant import QdrantIndex
 
 
-async def progress(stage):
+async def progress(stage, **details):
     """Принимает checkpoint этапа для unit проверки upstream polling."""
     return None
 

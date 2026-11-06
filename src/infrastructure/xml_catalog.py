@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from hashlib import sha256
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -12,6 +13,7 @@ from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
 from src.domain.models import CatalogItem, MapperError, ParsedCatalog
+from src.domain.models import digest as object_digest
 
 
 class XmlCatalogSource:
@@ -37,6 +39,8 @@ class XmlCatalogSource:
             raise MapperError("catalog_files", "XML отсутствуют или превышают допустимый объём")
         by_guid, code_ids, conflicts, digest = {}, {}, set(), sha256()
         without_guid = 0
+        rows = deleted_rows = technical_repeats = 0
+        signatures, code_counts = set(), Counter()
         try:
             for path in files:
                 if path.is_symlink() or path.resolve().parent != directory:
@@ -80,13 +84,24 @@ class XmlCatalogSource:
                     except ValueError as exc:
                         raise MapperError("catalog_guid", "Некорректная ссылка GUID 1С") from exc
                     guid = real_guid or str(uuid5(NAMESPACE_URL, f"spec-mapper:code:{code}"))
+                    rows += 1
+                    deleted_rows += deleted == "Да"
+                    code_counts[code] += 1
+                    signature = object_digest(
+                        {"attributes": dict(element.attrib), "values": values}
+                    )
+                    if (guid, signature) in signatures:
+                        technical_repeats += 1
+                        root.remove(element)
+                        continue
                     if not real_guid:
                         without_guid += 1
                     if guid in by_guid and real_guid:
                         raise MapperError("duplicate_guid", "XML содержит повторный GUID 1С")
-                    if code in code_ids and (not real_guid or code_ids[code] == guid):
+                    if code in code_ids:
                         conflicts.add(code)
                     code_ids[code] = guid
+                    signatures.add((guid, signature))
                     by_guid[guid] = CatalogItem(
                         guid=guid,
                         onec_guid=real_guid,
@@ -118,4 +133,14 @@ class XmlCatalogSource:
         items = [item for item in by_guid.values() if item.active and item.code not in conflicts]
         if not items:
             raise MapperError("empty_catalog", "XML не содержит разрешённых активных позиций")
-        return ParsedCatalog(items, digest.hexdigest(), warnings)
+        if technical_repeats:
+            warnings.append(f"Технические дословные повторы объединены: {technical_repeats}")
+        statistics = {
+            "total_rows": rows,
+            "deleted_rows": deleted_rows,
+            "technical_repeats": technical_repeats,
+            "conflicting_codes": sorted(conflicts),
+            "quarantined_rows": sum(code_counts[code] for code in conflicts),
+            "active_count": len(items),
+        }
+        return ParsedCatalog(items, digest.hexdigest(), warnings, statistics)

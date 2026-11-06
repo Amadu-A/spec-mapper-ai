@@ -13,7 +13,18 @@ from fastapi.responses import JSONResponse, Response
 from src.application.mappings import public_status, result_page
 from src.application.reports import export_json, export_xlsx
 from src.domain.models import MapperError
-from src.presentation.schemas import MappingStatus, Selection, SourceDocument, SubmitMapping
+from src.presentation.schemas import (
+    Approval,
+    ApprovedExport,
+    CandidatePage,
+    CatalogSearch,
+    MappingExport,
+    MappingResult,
+    MappingStatus,
+    Selection,
+    SourceDocument,
+    SubmitMapping,
+)
 from src.presentation.security import COOKIE, admin_owner, csrf_token, new_session, owner
 
 router = APIRouter(prefix="/api/v1")
@@ -47,10 +58,16 @@ async def submit(request: Request, body: SubmitMapping, current: Owner, key: Key
 
 
 @router.post("/mappings/import-json", response_model=MappingStatus, status_code=202)
-async def import_json(request: Request, body: SourceDocument, current: Owner, key: Key) -> dict:
+async def import_json(
+    request: Request,
+    body: SourceDocument,
+    current: Owner,
+    key: Key,
+    source_job_id: Annotated[UUID | None, Header(alias="X-Source-Job-ID")] = None,
+) -> dict:
     """Принимает окончательный JSON через ту же прикладную очередь, что и API polling."""
     job = await request.app.state.container.mappings.import_document(
-        current, key, body.model_dump()
+        current, key, body.model_dump(), str(source_job_id) if source_job_id else None
     )
     return public_status(job)
 
@@ -67,7 +84,9 @@ async def status(request: Request, job_id: UUID, current: Owner) -> dict:
     return public_status(await request.app.state.container.jobs.get(str(job_id), current))
 
 
-@router.get("/mappings/{job_id}/result")
+@router.get(
+    "/mappings/{job_id}/result", response_model=MappingResult, response_model_exclude_unset=True
+)
 async def result(
     request: Request,
     job_id: UUID,
@@ -82,7 +101,9 @@ async def result(
     return result_page(job, q, status, offset, limit)
 
 
-@router.get("/mappings/{job_id}/candidates")
+@router.get(
+    "/mappings/{job_id}/candidates", response_model=CandidatePage, response_model_exclude_unset=True
+)
 async def candidates(
     request: Request, job_id: UUID, current: Owner, row_index: int = Query(ge=0)
 ) -> dict:
@@ -111,7 +132,7 @@ async def select(
     return public_status(job)
 
 
-@router.get("/mappings/{job_id}/source.json")
+@router.get("/mappings/{job_id}/source.json", response_model=SourceDocument)
 async def original(request: Request, job_id: UUID, current: Owner) -> Response:
     """Отдаёт только исходный пятиколоночный документ без добавленных полей сопоставления."""
     job = await request.app.state.container.mappings.result(current, str(job_id))
@@ -120,7 +141,24 @@ async def original(request: Request, job_id: UUID, current: Owner) -> Response:
     )
 
 
-@router.get("/mappings/{job_id}/result.json")
+@router.post("/mappings/{job_id}/approve", response_model=MappingStatus)
+async def approve(request: Request, job_id: UUID, body: Approval, current: Owner, key: Key) -> dict:
+    """Утверждает весь результат идемпотентно; TTL не продлевает и спорные строки не скрывает."""
+    return public_status(
+        await request.app.state.container.mappings.approve(current, str(job_id), body.revision, key)
+    )
+
+
+@router.get("/mappings/{job_id}/approved.json", response_model=ApprovedExport)
+async def approved_report(request: Request, job_id: UUID, current: Owner) -> Response:
+    """Выдаёт неизменяемый финальный JSON, предназначенный для загрузки в 1С."""
+    snapshot = await request.app.state.container.jobs.approved(str(job_id), current)
+    return JSONResponse(
+        snapshot, headers={"Content-Disposition": 'attachment; filename="approved.json"'}
+    )
+
+
+@router.get("/mappings/{job_id}/result.json", response_model=MappingExport)
 async def json_report(request: Request, job_id: UUID, current: Owner) -> Response:
     """Экспортирует весь результат независимо от фильтра и страницы таблицы."""
     job = await request.app.state.container.mappings.result(current, str(job_id))
@@ -147,7 +185,7 @@ async def catalog_status(request: Request, current: Owner) -> dict:
     return await request.app.state.container.catalog.status()
 
 
-@router.get("/catalog/items")
+@router.get("/catalog/items", response_model=CatalogSearch, response_model_exclude_unset=True)
 async def search_catalog(
     request: Request,
     current: Owner,

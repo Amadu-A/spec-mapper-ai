@@ -17,7 +17,8 @@ x-app: &app
       required: false
   environment: &environment
     APP_BIND: ${APP_BIND:-0.0.0.0}
-    APP_PORT: ${APP_PORT:-8084}
+    APP_PORT: ${APP_PORT:-8087}
+    APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://192.168.55.3:8087}
     DATABASE_HOST: ${DATABASE_HOST:-postgres}
     DATABASE_PORT: ${DATABASE_PORT:-5432}
     DATABASE_NAME: ${DATABASE_NAME:-spec_mapper}
@@ -39,6 +40,7 @@ x-app: &app
     EXTRACTING_BASE_URL: ${EXTRACTING_BASE_URL:-http://spec-extracting-ai-api-1:8083}
     EXTRACTING_API_KEY: ${EXTRACTING_API_KEY:-}
     API_KEY: ${API_KEY:-}
+    API_KEYS: ${API_KEYS:-null}
     CATALOG_ADMIN_KEY: ${CATALOG_ADMIN_KEY:-}
     SESSION_SECRET: ${SESSION_SECRET:-}
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -48,6 +50,7 @@ x-app: &app
     CATALOG_SYNC_SECONDS: ${CATALOG_SYNC_SECONDS:-86400}
     RETENTION_SECONDS: ${RETENTION_SECONDS:-3600}
     DRAFT_TTL_SECONDS: ${DRAFT_TTL_SECONDS:-3600}
+    CATALOG_IMPORT_TIMEOUT_SECONDS: ${CATALOG_IMPORT_TIMEOUT_SECONDS:-86400}
     POLL_SECONDS: ${POLL_SECONDS:-3}
     UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-900}
     HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}
@@ -102,7 +105,7 @@ services:
       postgres: {condition: service_healthy}
   api:
     <<: *app
-    ports: ['${APP_BIND:-0.0.0.0}:${APP_PORT:-8084}:8000']
+    ports: ['${APP_BIND:-0.0.0.0}:${APP_PORT:-8087}:8000']
     depends_on:
       migrate: {condition: service_completed_successfully}
       qdrant: {condition: service_started}

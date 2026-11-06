@@ -75,7 +75,7 @@ async def test_pruner_keeps_active_previous_and_live_job_snapshot(system, source
     """Удаляет только obsolete staged версии; active, rollback и живые job refs защищены."""
     container, _, sync, catalog_source, _ = system
 
-    async def progress(stage):
+    async def progress(stage, **details):
         """Пропускает standalone этапы controlled синхронизации в integration test."""
         return None
 

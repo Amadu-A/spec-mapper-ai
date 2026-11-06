@@ -9,8 +9,21 @@ from json import dumps
 from typing import Any
 
 SOURCE_FIELDS = ("Caption", "Units", "Quantity", "UserComment1", "Pages")
-ALGORITHM_VERSION = "technical-baseline-v1"
-TERMINAL = {"ready_for_review", "complete", "failed"}
+ALGORITHM_VERSION = "technical-baseline-v2"
+TERMINAL = {"ready_for_review", "complete", "failed", "approved"}
+
+
+def ensure_approvable(state: str, rows: list[dict]) -> None:
+    """Разрешает общее утверждение после подбора и явного решения всех спорных строк."""
+    if state not in {"complete", "ready_for_review"}:
+        raise MapperError("approval_not_ready", "Сопоставление ещё не завершено", 409)
+    if any(
+        row["status"] == "review" or row["status"] == "not_found" and not row.get("confirmed")
+        for row in rows
+    ):
+        raise MapperError(
+            "unresolved_rows", "Подтвердите выбор или null для всех спорных строк", 409
+        )
 
 
 class MapperError(Exception):
@@ -69,6 +82,7 @@ class ParsedCatalog:
     items: list[CatalogItem]
     source_hash: str
     warnings: list[str] = field(default_factory=list)
+    statistics: dict = field(default_factory=dict)
 
 
 def digest(value: Any) -> str:

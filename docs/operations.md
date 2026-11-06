@@ -7,7 +7,10 @@
 первой сборки. Shared стек предварительно запущен, существующая `ai-shared` содержит
 RabbitMQ и `shared-embedding`. Скрипт ничего не устанавливает в systemd и не выбирает GPU.
 RabbitMQ обнаруживается по Compose label service=rabbitmq и участию в ai-shared;
-неоднозначное обнаружение останавливает запуск. Автоподготовка ограничена namespace
+неоднозначное обнаружение останавливает запуск. Bootstrap читает существующие admin credentials RabbitMQ из Docker deployment в память
+Pydantic, передаёт в Management API salted password_hash; пароль проекта не попадает
+в argv/docker exec/журналы. Admin credentials в .env проекта не сохраняются.
+Автоподготовка ограничена namespace
 `spec_mapper`; существующий чужой пользователь/vhost или неверный пароль не перезаписываются.
 
 Положите XML в data/ и настройте открытые параметры в .env.example. В .env храните
@@ -15,12 +18,22 @@ RabbitMQ обнаруживается по Compose label service=rabbitmq и у�
 значение EXTRACTING_BASE_URL в примере нужно сверить с вашим сервером.
 Не требуется и не создаётся секрет shared-embedding.
 
+XML игнорируется Git: `git pull` его не доставляет. Перед первым production-запуском
+передайте файл с Windows (в отдельной PowerShell-сессии):
+
+```powershell
+ssh main@192.168.55.3 "mkdir -p ~/projects/spec-mapper-ai/data"
+scp ".\data\Номенклатура_вся.xml" main@192.168.55.3:~/projects/spec-mapper-ai/data/
+```
+
 ```bash
 bash scripts/up.sh
 ```
 
 Обычный запуск не делает down, не удаляет volumes и не останавливает shared сервисы.
-Первый импорт 62 тысяч позиций может занять заметное время; worker журнал остаётся
+Первый импорт имеет отдельный deadline 24 часа (`CATALOG_IMPORT_TIMEOUT_SECONDS`)
+и сохраняет offset пачек для продолжения staging после отказа. Часовой TTL mapping
+не прерывает каталог. Worker журнал остаётся
 видимым. Ошибка импорта останавливает up.sh даже при ранее существовавшем каталоге.
 Старый индекс при этом остаётся доступным. Недоступные shared зависимости дают not ready.
 
@@ -35,7 +48,6 @@ bash scripts/up.sh
 bash scripts/test.sh --live
 ```
 
-Если remote ещё пустой, сначала нужен первый commit/push владельца: pull делать неоткуда.
 `test.sh` и `ops/check-quality.ps1` показывают логи. Первый браузерный запуск скачивает
 Chromium; на минимальном Linux системные библиотеки устанавливаются отдельно:
 
@@ -54,7 +66,9 @@ Live-проверка контракта извлечения требует я�
 docker compose --env-file .env.example --env-file .env run --build --rm --no-deps tests /app/.venv/bin/pytest -m live --source-job-id <UUID> -q
 ```
 
-Без UUID только этот live-тест помечается skipped; остальные реальные зависимости проверяются.
+Без UUID только upstream-тест помечается skipped. HTTP-цепочка onec → Top-5 →
+поиск → выбор/null → approve → approved.json требует API_KEYS с onec и telegram
+и готового каталога. Удаляются только собственные smoke-задания.
 
 Для ручной повторной синхронизации, без пересчёта неизменившихся векторов:
 
@@ -68,7 +82,7 @@ XML; подключение реальной 1С ещё требует её API-
 
 ## Ручная приёмка
 
-1. Откройте `http://<сервер>:8084/`: интерфейс по концепту renders, без входа/регистрации.
+1. Откройте `http://<сервер>:8087/`: интерфейс по концепту renders, без входа/регистрации.
    В справочнике видны реальные count, дата, fingerprint и карантин трёх кодов.
 2. Укажите UUID извлечения, созданного **тем же API-ключом**, который задан серверу.
    Должны смениться этапы ожидания, загрузки и сопоставления. Итог сохраняет все
@@ -77,7 +91,10 @@ XML; подключение реальной 1С ещё требует её API-
    другую позицию по коду/артикулу, сохраните и перезагрузите страницу. Выбор остаётся.
 4. Подтвердите «нет подходящей позиции». Проверьте фильтры, поиск, пагинацию и totals.
    В двух вкладках проверьте 409 при сохранении со старой revision.
-5. Скачайте source.json, result.json и Excel. Оригинальная пятёрка неизменна, включая
+5. Пока есть спорные строки, утверждение недоступно. Примите решения, нажмите
+   «Утвердить результат»: появляются финальный JSON и время утверждения; выбор
+   заблокирован и после reload. Скачайте approved.json. Также проверьте
+   source.json, предварительные result.json и Excel. Оригинальная пятёрка неизменна, включая
    Quantity строкой и UserComment1. Настоящий GUID 1С пуст, внутренний UUID явно отдельный.
    При ручном поиске вне Top-K отсутствующая оценка остаётся пустой.
 6. В приватном окне не должны быть видны задания первой сессии. Ключ upstream
@@ -94,7 +111,9 @@ XML; подключение реальной 1С ещё требует её API-
 ```bash
 docker compose --env-file .env.example --env-file .env ps
 docker compose --env-file .env.example --env-file .env logs --tail=100 api worker migrate
-curl --fail http://127.0.0.1:8084/health/ready
+curl --fail http://127.0.0.1:8087/health/live
+curl --fail http://127.0.0.1:8087/health/ready
+curl --fail http://127.0.0.1:8087/api/openapi.json
 ```
 
 `/health/live` — процесс; `/health/ready` проверяет реальные подключения и consumer.
@@ -110,3 +129,39 @@ count mismatch или несовместимая embedding identity не под�
 ссылается ни одно живое задание. Сборка версий использует тот же advisory lock.
 Активный каталог, XML и embedding-кэш этим обслуживанием не удаляются.
 Резервируйте PostgreSQL и Qdrant как данные этого проекта, независимо от shared stack.
+
+## Сеть и доступ с другого компьютера
+
+APP_BIND=0.0.0.0, APP_PORT=8087, APP_PUBLIC_BASE_URL=http://192.168.55.3:8087.
+Обычные параметры — в .env.example/окружении команды; секреты — только в .env.
+Web/API публикуют один порт; 8084 занят document-intake. Перед запуском:
+
+```bash
+ss -ltnp 'sport = :8087'
+docker ps --format '{{.Names}} {{.Ports}}'
+docker network inspect ai-shared
+sudo ufw status verbose
+sudo nft list ruleset
+```
+
+Firewall в ходе разработки не изменяется. Если политика требует разрешения,
+оператор после проверки существующих правил может добавить LAN-правило UFW:
+`sudo ufw allow from 192.168.55.0/24 to any port 8087 proto tcp`.
+Docker published ports могут обходить UFW: проверить DOCKER-USER/nftables, маршрутизатор
+и отсутствие доступа из недоверенных сетей. Не публиковать 5432/6333/5672 для этого
+проекта, не менять чужие правила. Для интернета отдельно настроить HTTPS reverse
+proxy, public URL, COOKIE_SECURE=true и политику доступа.
+
+С Windows после успешного up.sh:
+
+```powershell
+Test-NetConnection 192.168.55.3 -Port 8087
+Invoke-RestMethod http://192.168.55.3:8087/health/ready
+Start-Process http://192.168.55.3:8087/
+```
+
+Секреты оператор читает локально в защищённой .env, не через команды, печатающие
+credentials в общий журнал. Ключи onec/telegram передаются соответствующим
+разработчикам защищённым каналом; upstream key берётся из конфигурации extracting.
+Если пароль существующего RabbitMQ user не совпадает, bootstrap останавливается:
+восстановить согласованное значение RABBITMQ_PASSWORD, не сбрасывать shared пароль.

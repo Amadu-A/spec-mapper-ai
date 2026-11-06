@@ -12,7 +12,7 @@ import pytest
 from src.domain.models import MapperError
 
 
-async def nothing(stage):
+async def nothing(stage, **details):
     """Принимает progress standalone импорта без создания лишнего durable задания."""
     return None
 

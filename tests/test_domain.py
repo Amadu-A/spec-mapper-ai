@@ -71,6 +71,8 @@ def test_empty_hits_finish_and_normalization_preserves_technical_data():
         ("Манометр 0–10 бар", "Манометр 5–10 бар"),
         ("Теплообменник 300–400 кВт", "Теплообменник 350–400 кВт"),
         ("Привод 12,5 kW", "Привод 15 кВт"),
+        ("Датчик -20…+80 °C", "Датчик -10…+80 °C"),
+        ("Датчик -20 °C", "Датчик +20 °C"),
     ],
 )
 def test_ranges_and_latin_power_cannot_hide_conflict(query, title):
@@ -83,3 +85,21 @@ def test_ranges_and_latin_power_cannot_hide_conflict(query, title):
     )
     assert candidates[0].conflicts
     assert choose(candidates, 0.88, 0.05)["status"] == "review"
+
+
+def test_equivalent_signed_temperature_bounds():
+    """Знак числа не путается с разделителем диапазона температур."""
+    from src.domain.matching import parameters
+
+    assert parameters("Датчик -20…+80 °C") == parameters("Датчик -20 - 80 °С")
+    assert parameters("Датчик -20…+80 °C")["температура"] == {-20.0, 80.0}
+
+
+@pytest.mark.parametrize("caption", ["Насос артикул AB-12", "Насос модель АБ-12"])
+def test_unconfirmed_model_or_article_requires_review(caption):
+    """Высокий cosine не подтверждает отсутствующие артикул или модель."""
+    candidates = rerank(
+        {"Caption": caption, "Units": "шт"},
+        [(CatalogItem("id", "code", "Насос", "шт", article="AB-13"), 1.0)],
+    )
+    assert choose(candidates, 0.5, 0)["status"] == "review"

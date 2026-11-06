@@ -46,6 +46,26 @@ async def test_all_conflicting_code_rows_are_quarantined(tmp_path):
     assert any("Карантин" in warning and "01" in warning for warning in parsed.warnings)
 
 
+async def test_exact_technical_repeat_is_not_a_conflict(tmp_path):
+    """Полностью одинаковый повтор учитывается отдельно, не исключая корректный код."""
+    parsed = await write_xml(tmp_path, xml_row("00001") * 2).read()
+    assert [item.code for item in parsed.items] == ["00001"]
+    assert parsed.statistics["technical_repeats"] == 1
+    assert parsed.statistics["quarantined_rows"] == 0
+
+
+async def test_repeat_after_conflict_is_still_counted_separately(tmp_path):
+    """Разделённый конфликтом повтор учитывается отдельно, сохраняя карантин всего кода."""
+    source = write_xml(
+        tmp_path,
+        xml_row("01", "Первый") + xml_row("01", "Второй") + xml_row("01", "Первый") + xml_row("02"),
+    )
+    parsed = await source.read()
+    assert [item.code for item in parsed.items] == ["02"]
+    assert parsed.statistics["technical_repeats"] == 1
+    assert parsed.statistics["quarantined_rows"] == 3
+
+
 async def test_guid_duplicates_fail_even_with_quarantine(tmp_path):
     """Настоящий дубликат GUID — ошибка источника, которую нельзя скрыть политикой кодов."""
     guid = "<GUID>5e2cfd2a-51e3-44ba-88bd-914a93aa4a1c</GUID>"

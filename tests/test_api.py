@@ -39,6 +39,9 @@ async def test_api_contract_and_error_states(system, source):
             "created_at",
             "expires_at",
             "revision",
+            "approved_at",
+            "approved_revision",
+            "unresolved_count",
             "error_code",
             "total",
             "processed",
@@ -84,6 +87,30 @@ async def test_browser_cookie_origin_csrf_and_owner_isolation(system, source):
         assert (
             await first.post("/api/v1/catalog/imports", headers={**headers, "X-API-Key": "a" * 32})
         ).status_code == 403
+
+
+async def test_configured_public_origin_works_without_trusting_forwarded_headers(system, source):
+    """HTTPS proxy использует заданный public origin; чужой forwarded origin запрещён."""
+    container, *_ = system
+    container.settings.app_public_base_url = "https://mapper.example.test"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(container)), base_url="http://internal"
+    ) as client:
+        csrf = (await client.get("/api/v1/session")).json()["csrf"]
+        headers = {
+            "Idempotency-Key": "proxy",
+            "X-CSRF-Token": csrf,
+            "Origin": "https://evil.test",
+            "X-Forwarded-Host": "evil.test",
+            "X-Forwarded-Proto": "https",
+        }
+        assert (
+            await client.post("/api/v1/mappings/import-json", json=source, headers=headers)
+        ).status_code == 403
+        headers["Origin"] = "https://mapper.example.test"
+        assert (
+            await client.post("/api/v1/mappings/import-json", json=source, headers=headers)
+        ).status_code == 202
 
 
 async def test_manual_export_pagination_and_formula_literals(system, source):

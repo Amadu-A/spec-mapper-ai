@@ -14,6 +14,7 @@ from src.application.catalog import PruneCatalogUseCase, SynchronizeCatalogUseCa
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
 from src.config import Settings
+from src.domain.embedding import compatible_embedding
 from src.infrastructure.broker import RabbitBroker
 from src.infrastructure.http_clients import HttpExtractionSource, SharedEmbeddings
 from src.infrastructure.qdrant import QdrantIndex
@@ -60,7 +61,9 @@ class Container:
             """Сверяет реальную модель с fingerprint активного каталога."""
             identity = await self.embeddings.identity()
             catalog = await self.catalog.status()
-            if catalog.get("ready") and identity["fingerprint"] != catalog["fingerprint"]:
+            if catalog.get("ready") and not compatible_embedding(
+                catalog.get("embedding_identity", {"fingerprint": catalog["fingerprint"]}), identity
+            ):
                 raise ValueError("Изменилась embedding identity")
 
         async def index() -> None:

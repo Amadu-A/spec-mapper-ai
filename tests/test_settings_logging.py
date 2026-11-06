@@ -32,6 +32,23 @@ def test_all_settings_are_catalogued_and_forwarded():
         assert name.upper() + ":" in compose, name
 
 
+def test_named_keys_validate_identity_and_null_json():
+    """Исключает неоднозначный owner и сохраняет пустую конфигурацию до bootstrap."""
+    assert Settings(_env_file=None, api_keys=None).api_keys == {}
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, api_keys={"onec": "same", "telegram": "same"})
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, api_key="same", api_keys={"onec": "same"})
+
+
+def test_configuration_error_does_not_print_secret_values():
+    """Диагностика невалидного API_KEYS не раскрывает значения даже в startup traceback."""
+    secret = "private-value-that-must-never-be-logged"
+    with pytest.raises(ValueError) as error:
+        Settings(_env_file=None, api_keys={"onec": secret, "telegram": secret})
+    assert secret not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "asynchronous,fail", [(False, False), (False, True), (True, False), (True, True)]
 )

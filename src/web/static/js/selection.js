@@ -61,7 +61,7 @@ export function createSelection(onSaved) {
     } catch (error) {
       busy = false; save.disabled = false; showError(error);
       dialog.querySelector("[data-save-status]").textContent = "Выбор не сохранён";
-      if (error.code === "revision_conflict") { save.disabled = true; await onSaved(false); }
+      if (["revision_conflict", "result_approved"].includes(error.code)) { save.disabled = true; await onSaved(false); }
     }
   });
   return function openSelection(jobId, row, revision) {

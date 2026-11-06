@@ -13,6 +13,7 @@ from src.application.ports import (
     JobRepository,
     VectorIndex,
 )
+from src.domain.embedding import compatible_embedding
 from src.domain.matching import choose, normalize, rerank
 from src.domain.models import ALGORITHM_VERSION, MapperError, digest
 from src.observability import timed
@@ -53,9 +54,15 @@ class JobProcessor:
             if not await self.jobs.checkpoint(job_id, token, **changes):
                 raise MapperError("lease_lost", "Задание передано другому worker", 409)
 
-        async def progress(stage: str) -> None:
+        async def progress(stage: str, **details) -> None:
             """Отражает текущий этап без пользовательского payload в логах и broker message."""
-            await checkpoint(stage=stage, state=stage)
+            if details:
+                job["data"].update(catalog_progress=details)
+                if details.get("catalog_version"):
+                    job["data"]["catalog_version"] = details["catalog_version"]
+                await checkpoint(stage=stage, state=stage, data=job["data"])
+            else:
+                await checkpoint(stage=stage, state=stage)
 
         async def execute() -> None:
             """Выбирает только вид durable операции и сохраняет terminal checkpoint."""
@@ -65,7 +72,9 @@ class JobProcessor:
             if job["kind"] == "catalog":
                 status = await self.synchronizer.execute(progress)
                 await checkpoint(
-                    state="complete", stage="complete", data={"catalog_status": status}
+                    state="complete",
+                    stage="complete",
+                    data={**job["data"], "catalog_status": status},
                 )
                 return
             await self._match(job, checkpoint, progress)
@@ -119,13 +128,20 @@ class JobProcessor:
             if not current["ready"]:
                 raise MapperError("catalog_not_ready", "Сначала импортируйте номенклатуру", 503)
             identity = await self.embeddings.identity()
-            fingerprint = data.get("catalog_fingerprint", current["fingerprint"])
-            if identity["fingerprint"] != fingerprint:
+            expected = data.get("embedding_identity")
+            if expected is None:
+                expected = (
+                    {"fingerprint": data["catalog_fingerprint"]}
+                    if data.get("catalog_fingerprint")
+                    else current.get("embedding_identity", {"fingerprint": current["fingerprint"]})
+                )
+            if not compatible_embedding(expected, identity):
                 raise MapperError(
                     "embedding_incompatible", "Модель изменилась: требуется новая индексация", 503
                 )
             data.setdefault("catalog_version", current["version"])
             data.setdefault("catalog_fingerprint", current["fingerprint"])
+            data.setdefault("embedding_identity", expected)
             data.setdefault("collection", current["collection"])
             data["algorithm_version"] = ALGORITHM_VERSION
             await checkpoint(data=data, state="matching", stage="matching")

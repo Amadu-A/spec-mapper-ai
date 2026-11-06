@@ -22,13 +22,19 @@ def export_json(job: dict) -> dict:
         "source_hash": data["source_hash"],
         "catalog_version": data["catalog_version"],
         "algorithm_version": data["algorithm_version"],
+        "status": job["state"],
+        "approved_at": data.get("approval", {}).get("approved_at"),
+        "approved_revision": data.get("approval", {}).get("approved_revision"),
         "items": [
             {
                 **source,
+                "index": index,
                 "onec": row["selection"],
                 "matching": {
                     "status": row["status"],
                     "confirmed": row["confirmed"],
+                    "manually_reviewed": row.get("manually_reviewed", False),
+                    "approved": job["state"] == "approved",
                     "score": next(
                         (
                             candidate["score"]
@@ -40,7 +46,9 @@ def export_json(job: dict) -> dict:
                     ),
                 },
             }
-            for source, row in zip(data["source"]["items"], data["rows"], strict=True)
+            for index, (source, row) in enumerate(
+                zip(data["source"]["items"], data["rows"], strict=True)
+            )
         ],
     }
 

@@ -35,6 +35,10 @@ class QdrantIndex:
             json={"vectors": {"size": dimension, "distance": "Cosine"}},
         )
 
+    async def exists(self, collection: str) -> bool:
+        """Читает существование коллекции без её изменения."""
+        return (await self.request("GET", f"/collections/{collection}/exists"))["result"]["exists"]
+
     async def clone(self, source: str, target: str) -> None:
         """Восстанавливает новую коллекцию из snapshot вместе с готовым индексом HNSW."""
         exists = await self.request("GET", f"/collections/{target}/exists")

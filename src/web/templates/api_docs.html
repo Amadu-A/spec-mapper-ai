@@ -1,0 +1,8 @@
+<!-- src/web/templates/api_docs.html -->
+<!doctype html>
+<!-- Локальная документация интеграционных контрактов; schema загружается только с этого сервера. -->
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spec Mapper AI · API</title><link rel="stylesheet" href="/static/css/style.css"><script type="module" src="/static/js/docs.js"></script></head>
+<body class="api-docs"><header class="api-docs__header"><a href="/">▦ Spec Mapper AI</a><a class="button" href="/api/openapi.json" download>Скачать OpenAPI JSON</a></header>
+<main class="api-docs__main"><h1>API сопоставления спецификаций</h1><p>1С и Telegram передают готовый JSON, получают Top-5, сохраняют выбор и утверждают итоговый результат.</p><section class="notice"><h2>Авторизация</h2><p><code>X-API-Key</code> — собственный ключ интеграции. <code>Idempotency-Key</code> — стабильный ключ повторяемого запроса. Для импорта каталога нужен отдельный <code>X-Catalog-Key</code>.</p><p>Cookie web-сессии требует CSRF и Origin для записи. Ключи 1С/бота не выдаются браузеру. Передавайте документы из доверенного серверного кода.</p></section>
+<label for="api-filter">Найти маршрут</label><input id="api-filter" class="input input--wide" type="search" data-api-filter placeholder="Например: approve или import-json"><p role="status" data-api-status>Загрузка схемы…</p><section data-api-routes aria-label="Маршруты REST API"></section>
+<details class="api-docs__endpoint"><summary>Схемы запросов и ответов</summary><pre data-api-schemas></pre></details></main></body></html>

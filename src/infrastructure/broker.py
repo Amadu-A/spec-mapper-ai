@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import aio_pika
@@ -14,15 +15,27 @@ class RabbitBroker:
     def __init__(self, settings) -> None:
         """Сохраняет настройки project user/vhost без открытия соединения в конструкторе."""
         self.settings, self.connection, self.channel, self.queue = settings, None, None, None
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Восстанавливает соединение и объявляет только собственную durable очередь."""
-        if self.connection is not None and not self.connection.is_closed:
-            return
-        self.connection = await aio_pika.connect_robust(self.settings.amqp_url, timeout=10)
-        self.channel = await self.connection.channel(publisher_confirms=True)
-        await self.channel.set_qos(prefetch_count=self.settings.worker_concurrency)
-        self.queue = await self.channel.declare_queue(self.settings.rabbitmq_queue, durable=True)
+        async with self._connect_lock:
+            if (
+                self.connection is not None
+                and not self.connection.is_closed
+                and self.channel is not None
+                and not self.channel.is_closed
+                and self.queue is not None
+            ):
+                return
+            if self.connection is not None:
+                await self.connection.close()
+            self.connection = await aio_pika.connect_robust(self.settings.amqp_url, timeout=10)
+            self.channel = await self.connection.channel(publisher_confirms=True)
+            await self.channel.set_qos(prefetch_count=self.settings.worker_concurrency)
+            self.queue = await self.channel.declare_queue(
+                self.settings.rabbitmq_queue, durable=True
+            )
 
     async def publish(self, job_id: str) -> None:
         """Ждёт broker confirm; сбой оставляет outbox для повторной публикации."""

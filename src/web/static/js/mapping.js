@@ -9,6 +9,8 @@ export function createMapping(notify) {
   /** Подключает элементы рабочей таблицы и возвращает восстановление задания по ID. */
   let jobId, revision = 0, offset = 0, timer, expiration, generation = 0;
   let resultGeneration = 0;
+  let currentStatus = "queued";
+  const approveButton = document.querySelector("[data-approve]");
   let pendingSubmit;
   async function submitOnce(path, payload) {
     /** Повтор после потери HTTP-ответа использует прежний ключ вместо создания копии задания. */
@@ -28,14 +30,16 @@ export function createMapping(notify) {
   function disableExports(disabled) {
     /** Не позволяет скачать чужое, незавершённое или истёкшее задание из UI. */
     document.querySelectorAll("[data-export]").forEach(link => {
-      link.setAttribute("aria-disabled", String(disabled));
-      if (disabled) link.removeAttribute("href");
+      const unavailable = disabled || link.dataset.export === "approved.json" && currentStatus !== "approved";
+      link.setAttribute("aria-disabled", String(unavailable));
+      if (unavailable) link.removeAttribute("href");
       else link.href = `/api/v1/mappings/${jobId}/${link.dataset.export}`;
     });
   }
   function expire() {
     /** Убирает временный документ из DOM по TTL, даже если вкладка оставалась открытой. */
     generation++; resultGeneration++; clearTimeout(timer); disableExports(true); rowsNode.replaceChildren();
+    approveButton.disabled = true;
     document.querySelector("[data-empty]").hidden = false;
     document.querySelector("[data-empty]").textContent = "Срок хранения задания истёк. Создайте новое сопоставление.";
     document.querySelector("[data-drawer]").close();
@@ -64,6 +68,7 @@ export function createMapping(notify) {
     tr.append(state);
     const action = element("td"), button = element("button", "button match-table__button", "Выбрать ↗");
     button.type = "button"; button.setAttribute("aria-label", `Выбрать соответствие для строки ${row.index + 1}`);
+    button.disabled = currentStatus === "approved";
     button.addEventListener("click", () => choose(jobId, row, revision)); action.append(button); tr.append(action); return tr;
   }
   async function loadRows() {
@@ -89,14 +94,17 @@ export function createMapping(notify) {
     try {
       const data = await api(`/api/v1/mappings/${jobId}`);
       if (request !== generation) return;
-      revision = data.revision;
+      revision = data.revision; currentStatus = data.status;
+      const ready = ["complete", "ready_for_review"].includes(data.status);
+      approveButton.disabled = !ready || data.unresolved_count > 0;
+      document.querySelector("[data-approval-status]").textContent = data.status === "approved" ? `Результат утверждён ${new Date(data.approved_at * 1000).toLocaleString("ru")}. Финальный JSON доступен для 1С.` : data.unresolved_count > 0 ? `Примите явное решение в спорных строках: ${data.unresolved_count}.` : "После проверки строк утвердите общий результат для передачи в 1С.";
       document.querySelector("[data-job-status]").textContent = `${stages[data.status] || data.stage}${data.error_code ? ` · ${data.error_code}` : ""} · ${data.processed}/${data.total}`;
       document.querySelector("[data-pipeline]").textContent = `${stages[data.status] || data.stage} · хранение до ${new Date(data.expires_at * 1000).toLocaleTimeString("ru")}. Автоподбор не означает проверку человеком.`;
       document.querySelector("[data-count='total']").textContent = data.total;
       document.querySelector("[data-count='matched']").textContent = data.counts.matched + data.counts.manual;
       for (const name of ["review", "not_found"]) document.querySelector(`[data-count='${name}']`).textContent = data.counts[name];
       clearTimeout(expiration); expiration = setTimeout(expire, Math.max(0, data.expires_at * 1000 - Date.now()));
-      if (["complete", "ready_for_review"].includes(data.status)) { disableExports(false); await loadRows(); }
+      if (["complete", "ready_for_review", "approved"].includes(data.status)) { disableExports(false); await loadRows(); }
       else if (!terminal(data.status)) timer = setTimeout(poll, 3000);
       else notify(`Обработка не выполнена: ${data.error_code}. Создайте новое задание после устранения причины.`, true);
     } catch (error) {
@@ -108,6 +116,7 @@ export function createMapping(notify) {
   async function open(id) {
     /** Очищает предыдущий результат и закрепляет UUID в URL без хранения документа в localStorage. */
     generation++; resultGeneration++; clearTimeout(timer); clearTimeout(expiration); jobId = id; offset = 0;
+    currentStatus = "queued"; approveButton.disabled = true;
     rowsNode.replaceChildren(); disableExports(true); filter.value = ""; status.value = "all";
     document.querySelector("[data-empty]").hidden = false;
     document.querySelector("[data-empty]").textContent = "Ожидание результата сопоставления…";
@@ -120,6 +129,12 @@ export function createMapping(notify) {
     const button = form.querySelector("button"); button.disabled = true;
     try { const job = await submitOnce("/api/v1/mappings", { source_job_id: id }); await open(job.job_id); }
     catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+  });
+  approveButton.addEventListener("click", async () => {
+    if (!jobId || approveButton.disabled) return;
+    approveButton.disabled = true;
+    try { await submitOnce(`/api/v1/mappings/${jobId}/approve`, { revision }); await poll(); notify("Результат утверждён. Скачайте финальный JSON для 1С."); }
+    catch (error) { notify(error.message, true); await poll(); }
   });
   document.querySelector("[data-import]").addEventListener("change", async event => {
     const file = event.target.files[0]; if (!file) return;

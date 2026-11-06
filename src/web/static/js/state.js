@@ -1,11 +1,11 @@
 // src/web/static/js/state.js
 /** Небольшие чистые правила UI; бизнес-подбор и сохранение выполняет backend. */
 export const labels = { matched: "Подобрано", review: "Проверить", not_found: "Не найдено", manual: "Вручную" };
-export const stages = { queued: "В очереди", polling: "Ожидание извлечения", fetching: "Получение JSON", matching: "Сопоставление", ready_for_review: "Подбор завершён · требуется проверка", complete: "Обработка завершена", failed: "Ошибка обработки", retry: "Повторная попытка" };
+export const stages = { queued: "В очереди", polling: "Ожидание извлечения", fetching: "Получение JSON", matching: "Сопоставление", ready_for_review: "Подбор завершён · требуется проверка", complete: "Обработка завершена", approved: "Результат утверждён", failed: "Ошибка обработки", retry: "Повторная попытка" };
 
 export function terminal(status) {
   /** Завершает технический polling, даже если кандидаты требуют ручной проверки. */
-  return ["complete", "ready_for_review", "failed"].includes(status);
+  return ["complete", "ready_for_review", "approved", "failed"].includes(status);
 }
 export function validUuid(value) {
   /** Проверяет форму UUID до создания запроса; окончательная валидация остаётся на сервере. */

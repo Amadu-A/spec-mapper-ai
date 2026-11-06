@@ -4,15 +4,16 @@
 Машиночитаемая схема: `/api/openapi.json`. Времена в ответах — Unix seconds UTC.
 Все UUID передаются полными строками. Индексы строк начинаются с нуля.
 
-API-клиент передаёт `X-API-Key: <API_KEY>`. Этот ключ принадлежит одной интеграции и
-определяет её owner. Web использует cookie `spec_mapper_session`; для writes нужны
+API-клиент передаёт `X-API-Key` из `API_KEYS` (`onec`, `telegram`): имя определяет
+стабильный owner, значение можно ротировать. Legacy `API_KEY` сохраняет прежний owner.
+Web использует cookie `spec_mapper_session`; для writes нужны
 точный `Origin` и `X-CSRF-Token` из `GET /api/v1/session`. Ключ upstream — другой,
 `EXTRACTING_API_KEY`, и используется только сервером. CORS для чужих origin не включён.
 
 | Метод и путь | Назначение |
 |---|---|
 | `POST /api/v1/mappings` | `{ "source_job_id": "UUID" }`, обязательный `Idempotency-Key`, 202 |
-| `POST /api/v1/mappings/import-json` | Готовый пятиколоночный документ, `Idempotency-Key`, 202 |
+| `POST /api/v1/mappings/import-json` | Основной вход: пятиколоночный JSON, `Idempotency-Key`, необязательный UUID `X-Source-Job-ID`, 202 |
 | `GET /api/v1/mappings` | Последние 50 неистёкших заданий текущего owner |
 | `GET /api/v1/mappings/{id}` | Статус, этап, counts, processed, TTL, revision и links |
 | `GET /api/v1/mappings/{id}/result` | Страница готовых rows; до готовности 409 |
@@ -21,6 +22,8 @@ API-клиент передаёт `X-API-Key: <API_KEY>`. Этот ключ пр
 | `GET /api/v1/mappings/{id}/source.json` | Оригинальный документ без добавленных полей |
 | `GET /api/v1/mappings/{id}/result.json` | Полный результат со всеми строками |
 | `GET /api/v1/mappings/{id}/result.xlsx` | Полный Excel, исходные значения — literal text |
+| `POST /api/v1/mappings/{id}/approve` | `{ "revision": 3 }`, `Idempotency-Key`; immutable snapshot, 200 |
+| `GET /api/v1/mappings/{id}/approved.json` | Только утверждённый снимок для 1С; до approval 409 |
 | `GET /api/v1/catalog/status` | count, version, fingerprint, warnings, last_successful_sync |
 | `GET /api/v1/catalog/items?q=...&limit=20` | Поиск по имени/коду/артикулу, limit 1–50 |
 | `POST /api/v1/catalog/imports` | Импорт настроенного data/, отдельный `X-Catalog-Key`, `Idempotency-Key` |
@@ -48,3 +51,12 @@ upstream_forbidden/upstream_failed/upstream_cancelled/upstream_timeout,
 embedding_unavailable/embedding_incompatible, catalog_not_ready, qdrant_unavailable.
 После физической очистки истёкший UUID возвращает 404. `ready_for_review` — технически
 завершённое задание, доступное для экспорта; незавершённые partial rows не выдаются.
+
+Статус содержит `unresolved_count`, `approved_at`, `approved_revision`, `links.status`
+и `links.approved`. Общее утверждение требует актуальной revision и явного решения
+в `review`/неподтверждённых `not_found`; автоматические `matched` допустимы. Повтор
+утверждённой revision идемпотентен. После approval изменения дают `result_approved` (409).
+Approval не продлевает TTL. Предварительные JSON/Excel сохраняются, финал — `approved.json`.
+Его `approval` содержит owner, время, revision и версию каталога; строки содержат
+исходную пятёрку, стабильный `index`, `onec` (либо null), признаки `matching`.
+Полный пример и последовательность интеграции: [INTEGRATION_1C.md](INTEGRATION_1C.md).

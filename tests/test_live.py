@@ -1,19 +1,198 @@
 # tests/test_live.py
 """Только реальные PostgreSQL/Qdrant/shared-embedding/RabbitMQ; запуск после scripts/up.sh."""
 
+import asyncio
+from dataclasses import replace
+from urllib.parse import quote
 from uuid import uuid4
 
+import httpx
 import pytest
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
+from src.application.catalog import SynchronizeCatalogUseCase
 from src.bootstrap import build_container
 from src.config import Settings
+from src.domain.models import CatalogItem, ParsedCatalog, digest
 from src.infrastructure.broker import RabbitBroker
-from src.infrastructure.database import JobRow
+from src.infrastructure.database import Base, CatalogVersionRow, JobRow
 from src.infrastructure.http_clients import HttpExtractionSource
 from src.infrastructure.qdrant import QdrantIndex
 
 pytestmark = pytest.mark.live
+
+
+async def test_live_incremental_catalog_keeps_unchanged_vectors():
+    """Реальные PostgreSQL/Qdrant/embedding проверяют delta в отдельной тестовой SQL-схеме."""
+    settings = Settings()
+    namespace = "spec_mapper_smoke_" + uuid4().hex
+    control = build_container(settings)
+    isolated = build_container(
+        settings.model_copy(update={"qdrant_alias": namespace}),
+        settings.database_url + "?options=" + quote("-csearch_path=" + namespace, safe=""),
+    )
+    created = False
+
+    class SnapshotSource:
+        """Синтетический справочник теста; внешние SQL/HTTP адаптеры остаются настоящими."""
+
+        items = [
+            CatalogItem(str(uuid4()), "TEST-001", "Клапан DN50 PN16", "шт"),
+            CatalogItem(str(uuid4()), "TEST-002", "Клапан DN40 PN16", "шт"),
+            CatalogItem(str(uuid4()), "TEST-003", "Насос 40 Вт", "шт"),
+        ]
+
+        async def read(self):
+            """Возвращает проверенный снимок фиксированных тестовых наименований."""
+            return ParsedCatalog(self.items, digest([item.to_dict() for item in self.items]))
+
+    class CountedEmbeddings:
+        """Считает векторизацию позиций, делегируя реальные запросы shared-embedding."""
+
+        count = 0
+
+        async def identity(self):
+            """Проверяет настоящую модель отдельно от счётчика позиций справочника."""
+            return await isolated.embeddings.identity()
+
+        async def embed(self, texts):
+            """Делегирует векторизацию настоящему сервису без fake векторов."""
+            self.count += len(texts)
+            return await isolated.embeddings.embed(texts)
+
+    async def progress(stage, **details):
+        """Не сохраняет тестовые тексты или служебные реквизиты в журнал."""
+        return None
+
+    try:
+        async with control.engine.begin() as connection:
+            await connection.execute(text("CREATE SCHEMA " + namespace))
+        created = True
+        async with isolated.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        source, embeddings = SnapshotSource(), CountedEmbeddings()
+        sync = SynchronizeCatalogUseCase(source, isolated.catalog, embeddings, isolated.index, 3)
+        first = await sync.execute(progress)
+        assert embeddings.count == 3
+        source.items = [
+            source.items[0],
+            replace(source.items[1], name="Клапан DN65 PN16"),
+            CatalogItem(str(uuid4()), "TEST-004", "Насос 60 Вт", "шт"),
+        ]
+        second = await sync.execute(progress)
+        assert second["mode"] == "incremental"
+        assert second["embedded_count"] == second["indexed_count"] == 2
+        assert second["removed_count"] == second["reused_count"] == 1
+        assert embeddings.count == 5
+        assert await isolated.index.count(first["collection"]) == 3
+        assert await isolated.index.count(second["collection"]) == 3
+        repeated = await sync.execute(progress)
+        assert repeated["version"] == second["version"] and embeddings.count == 5
+    finally:
+        if created:
+            status = await isolated.catalog.status()
+            if status["ready"]:
+                await isolated.index.restore(None)
+            async with isolated.jobs.sessions() as session:
+                versions = list(await session.scalars(select(CatalogVersionRow)))
+            for version in versions:
+                collection = version.metadata_json["collection"]
+                if await isolated.index.exists(collection):
+                    await isolated.index.remove(collection)
+        await isolated.close()
+        if created:
+            async with control.engine.begin() as connection:
+                await connection.execute(text("DROP SCHEMA " + namespace + " CASCADE"))
+        await control.close()
+
+
+async def test_live_onec_http_chain_and_owner_isolation():
+    """Реальный API/worker: JSON, Top-5, поиск, выбор/null, revision, approval и чужой ключ."""
+    settings = Settings()
+    if not {"onec", "telegram"} <= settings.api_keys.keys():
+        pytest.skip("Для цепочки нужны API_KEYS с отдельными onec и telegram")
+    headers = {
+        "X-API-Key": settings.api_keys["onec"].get_secret_value(),
+        "Idempotency-Key": "live-onec-" + uuid4().hex,
+        "X-Source-Job-ID": str(uuid4()),
+    }
+    other = {"X-API-Key": settings.api_keys["telegram"].get_secret_value()}
+    row = {
+        "Caption": "Тестовое сопоставление DN50 PN16",
+        "Units": "шт",
+        "Quantity": " 2,50 ",
+        "UserComment1": "TEST-MAPPER",
+        "Pages": "1–2",
+    }
+    source = {"items": [row.copy(), row.copy()]}
+    container = build_container(settings)
+    job_id = None
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.app_public_base_url, headers=headers, timeout=30, trust_env=False
+        ) as client:
+            ready = await client.get("/health/ready")
+            assert ready.status_code == 200, "Сначала завершите scripts/up.sh"
+            response = await client.post("/api/v1/mappings/import-json", json=source)
+            assert response.status_code == 202
+            job_id = response.json()["job_id"]
+            path = "/api/v1/mappings/" + job_id
+            repeat = await client.post("/api/v1/mappings/import-json", json=source)
+            assert repeat.json()["job_id"] == job_id
+            for _ in range(60):
+                status = (await client.get(path)).json()
+                if status["status"] in {"complete", "ready_for_review", "failed"}:
+                    break
+                await asyncio.sleep(1)
+            assert status["status"] in {"complete", "ready_for_review"}
+            candidates = (await client.get(path + "/candidates?row_index=0")).json()
+            catalog = (await client.get("/api/v1/catalog/status")).json()
+            assert len(candidates["candidates"]) == min(5, catalog["count"])
+            found = (await client.get("/api/v1/catalog/items?q=0&limit=1")).json()["items"]
+            assert found, "В тестовом/реальном каталоге ожидается хотя бы один код с 0"
+            selected = await client.put(
+                path + "/rows/0/selection",
+                json={"catalog_item_guid": found[0]["guid"], "revision": status["revision"]},
+            )
+            assert selected.status_code == 200
+            stale = await client.put(
+                path + "/rows/1/selection",
+                json={"catalog_item_guid": None, "revision": status["revision"]},
+            )
+            assert stale.status_code == 409
+            selected = await client.put(
+                path + "/rows/1/selection",
+                json={"catalog_item_guid": None, "revision": selected.json()["revision"]},
+            )
+            assert selected.status_code == 200
+            revision = selected.json()["revision"]
+            approved = await client.post(path + "/approve", json={"revision": revision})
+            assert approved.status_code == 200
+            assert approved.json()["expires_at"] == status["expires_at"]
+            snapshot = (await client.get(path + "/approved.json")).json()
+            assert snapshot["status"] == "approved" and snapshot["approval"]["owner"] == "api:onec"
+            assert snapshot["items"][0]["onec"]["code"] == found[0]["code"]
+            assert snapshot["items"][1]["onec"] is None
+            assert (await client.get(path + "/source.json")).json() == source
+            assert (await client.get(path + "/result.xlsx")).content.startswith(b"PK")
+            assert (
+                await client.post(path + "/approve", json={"revision": revision})
+            ).status_code == 200
+            assert (await client.get(path + "/approved.json")).json() == snapshot
+            assert (
+                await client.put(
+                    path + "/rows/0/selection",
+                    json={"catalog_item_guid": None, "revision": revision},
+                )
+            ).status_code == 409
+            for suffix in ("", "/result", "/approved.json", "/source.json", "/result.xlsx"):
+                response = await client.get(path + suffix, headers=other)
+                assert response.status_code == 404
+    finally:
+        if job_id:
+            async with container.jobs.sessions.begin() as session:
+                await session.execute(delete(JobRow).where(JobRow.id == job_id))
+        await container.close()
 
 
 async def test_live_upstream_contract(request):
@@ -24,7 +203,7 @@ async def test_live_upstream_contract(request):
     container = build_container(Settings())
     try:
 
-        async def progress(stage):
+        async def progress(stage, **details):
             """Принимает этапы readonly проверки без сохранения документа в артефакты."""
             return None
 

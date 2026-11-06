@@ -10,6 +10,8 @@
 
 - `mapping_jobs` — временный агрегат задания: owner, idempotency hash, request hash,
   source snapshot, отдельные rows/candidates/selection, revision, TTL, lease и outbox.
+- `mapping_approvals` — неизменяемый финальный snapshot, owner, revision, время и hash
+  ключа утверждения. Удаляется вместе с временным заданием; TTL не продлевает.
 - `catalog_versions`, `catalog_entries` — постоянные неизменяемые снимки номенклатуры.
 - `catalog_state` — единственный активный указатель, предыдущая версия, последняя
   успешная синхронизация и код последней ошибки.
@@ -20,6 +22,8 @@ claim, fenced checkpoint, ручной выбор+revision, stage и activate. �
 использует собственную короткую транзакцию; SQL не протекает в application.
 Ручной выбор блокирует строку и проверяет revision повторно через CAS update.
 Новый запрос со старой revision получает 409. Номера строк нулевые и стабильные.
+Approval блокирует ту же строку задания, повторно проверяет revision/спорные строки,
+атомарно сохраняет snapshot и переводит job в approved. Последующие selection запрещены.
 
 Cookie owner и API owner изолированы; неверный API-ключ не переключается молча на cookie.
 Чужой job возвращает 404; собственный истёкший — 410 до очистки, затем 404.
@@ -50,11 +54,23 @@ Dispatcher публикует только UUID с publisher confirm; после
 5. Qdrant alias переключается одним запросом, затем транзакцией меняется DB pointer.
    При ошибке commit alias откатывается.
 
+Staging хранит `initialized`, `resume_offset`, base version, counts, source hash и
+fingerprint. После сбоя переиспользуется совместимый unpublished снимок и vector cache;
+offset фиксируется после durable upsert пачки. Для каталога отдельный deadline 24 часа,
+вместо часового TTL mapping. Живой импорт защищает staging/base от фоновой сборки.
+Опубликованный неизменённый источник проверяется по реальному существованию/count индекса.
+
 Межсервисной distributed transaction нет. Поэтому **поиск всегда использует concrete
 collection из PostgreSQL snapshot**, а не alias: crash между двумя операциями
 не смешивает версии и не выключает старый поиск. Предыдущая коллекция сохраняется.
 Смена модели/размерности/probe создаёт новый fingerprint и новый индекс.
 Metadata `created` и случайные permission IDs `/models` не входят в identity.
+Контрольный вектор хранится с metadata identity. Численный шум GPU проверяется по
+cosine (не ниже `1−1e−6`) и максимальному отклонению (`1e−4` с учётом масштаба),
+а не по точному равенству хешей float. Metadata/revision/размерность проверяются строго.
+Fingerprint индекса закреплён за совместимым reference: шум не меняет vector cache.
+Старый формат получает reference только после точного совпадения прежнего fingerprint;
+неизвестная identity не принимается молча.
 
 Каждая новая версия публикует новый Qdrant snapshot. Нормальный incremental import
 переносит готовый индекс [через восстановление snapshot](https://api.qdrant.tech/v-1-16-x/api-reference/snapshots/recover-from-snapshot)
