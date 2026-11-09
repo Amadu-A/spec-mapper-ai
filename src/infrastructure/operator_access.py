@@ -27,8 +27,8 @@ class SqlOperatorAccess:
             CatalogAuditRow(id=str(uuid4()), at=self.clock(), actor=actor, event=event, details={})
         )
 
-    async def issue(self) -> str:
-        """Генерирует одноразовый ticket для SSH-оператора; не предназначен для HTTP endpoint."""
+    async def issue(self, actor: str = "local_cli") -> str:
+        """Генерирует ticket для CLI либо доверенного SSH gateway без запуска shell-команды."""
         ticket = secrets.token_urlsafe(32)
         async with self.sessions.begin() as session:
             session.add(
@@ -37,7 +37,7 @@ class SqlOperatorAccess:
                     expires_at=self.clock() + self.settings.operator_ticket_seconds,
                 )
             )
-            self.audit(session, "operator_ticket_issued", "local_cli")
+            self.audit(session, "operator_ticket_issued", actor)
         return ticket
 
     async def consume(self, ticket: str) -> str:

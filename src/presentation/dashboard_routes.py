@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -13,13 +14,17 @@ from fastapi.responses import JSONResponse, Response
 from src.application.reports import export_catalog_xlsx
 from src.domain.models import MapperError
 from src.presentation.dashboard_schemas import (
+    CatalogImportStatus,
     CatalogRun,
     ImportHistoryPage,
     JobsPage,
     OperatorLogin,
+    RefreshAvailability,
+    RefreshRequest,
     SyncConfiguration,
     SyncSettingsView,
 )
+from src.presentation.gateway_security import has_gateway_proof
 from src.presentation.operator_security import (
     OPERATOR_COOKIE,
     check_operator_csrf,
@@ -28,6 +33,7 @@ from src.presentation.operator_security import (
     operator_serializer,
     secure_operator_channel,
 )
+from src.presentation.routes import Key, catalog_progress
 from src.presentation.security import csrf_token, owner
 
 router = APIRouter(prefix="/api/v1")
@@ -45,7 +51,50 @@ async def operator_session(request: Request, current: Owner) -> dict:
         "can_login": secure_operator_channel(request),
         "csrf": csrf_token("operator:" + nonce, settings) if nonce else None,
         "session_seconds": settings.operator_session_seconds,
+        "can_issue_ticket": has_gateway_proof(request),
+        "operator_port": settings.operator_port,
+        "ssh_host": urlsplit(settings.app_public_base_url).hostname,
     }
+
+
+@router.post("/operator/tickets", status_code=201)
+async def issue_operator_ticket(request: Request, current: Owner) -> dict:
+    """Выдаёт одноразовый код только через серверный loopback gateway SSH-туннеля."""
+    if not current.startswith("web:") or not has_gateway_proof(request):
+        raise MapperError("ssh_gateway_required", "Получите код через защищённый SSH-вход", 403)
+    container = request.app.state.container
+    return {
+        "ticket": await container.operator_access.issue("ssh_gateway"),
+        "expires_in": container.settings.operator_ticket_seconds,
+    }
+
+
+@router.get("/catalog/refresh-status", response_model=RefreshAvailability)
+async def refresh_availability(request: Request, current: Owner) -> dict:
+    """Раскрывает только разрешение запуска, cooldown и технический прогресс, без секретов."""
+    return await request.app.state.container.sync.refresh_status(
+        operator=await operator_nonce(request) is not None
+    )
+
+
+@router.post("/catalog/refresh", status_code=202, response_model=CatalogImportStatus)
+async def refresh_catalog(
+    request: Request, current: Owner, key: Key, body: RefreshRequest | None = None
+) -> dict:
+    """Ставит общий HTTP импорт в очередь; настройки меняет только оператор."""
+    job = await request.app.state.container.sync.refresh(
+        current, key, operator=await operator_nonce(request) is not None
+    )
+    return catalog_progress(job)
+
+
+@router.get("/catalog/refreshes/{job_id}", response_model=CatalogImportStatus)
+async def own_refresh_status(request: Request, job_id: UUID, current: Owner) -> dict:
+    """Возвращает прогресс своего запуска без административной выдачи чужих отчётов."""
+    job = await request.app.state.container.jobs.get(str(job_id), current)
+    if job["kind"] != "catalog":
+        raise MapperError("not_found", "Обновление справочника не найдено", 404)
+    return catalog_progress(job)
 
 
 @router.post("/operator/session")

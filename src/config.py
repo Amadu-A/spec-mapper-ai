@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     catalog_staging_directory: Path = Path("staging")
     operator_session_seconds: int = Field(900, ge=60, le=3600)
     operator_ticket_seconds: int = Field(120, ge=30, le=600)
+    operator_port: int = Field(8088, ge=1024, le=65535)
+    operator_gateway_base_url: str = "http://api:8000"
     worker_heartbeat_ttl_seconds: int = Field(45, ge=10, le=300)
     onec_catalog_url: str = ""
     onec_catalog_http_method: str = "GET"
@@ -108,6 +110,19 @@ class Settings(BaseSettings):
             raise ValueError("duplicate_code_policy: reject или quarantine")
         if self.app_port == 8083:
             raise ValueError("Порт 8083 принадлежит spec-extracting-ai")
+        if self.operator_port in {self.app_port, 8083}:
+            raise ValueError("OPERATOR_PORT должен отличаться от APP_PORT и 8083")
+        gateway = urlsplit(self.operator_gateway_base_url)
+        if (
+            gateway.scheme not in {"http", "https"}
+            or not gateway.hostname
+            or gateway.username
+            or gateway.password
+            or gateway.query
+            or gateway.fragment
+            or gateway.path not in {"", "/"}
+        ):
+            raise ValueError("OPERATOR_GATEWAY_BASE_URL: нужен фиксированный HTTP(S) origin API")
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", self.catalog_sync_time_utc):
             raise ValueError("CATALOG_SYNC_TIME_UTC: требуется HH:MM UTC")
         public = urlsplit(self.app_public_base_url)

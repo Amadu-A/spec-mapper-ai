@@ -7,6 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text
@@ -200,10 +201,35 @@ class SqlSyncRepository:
         session.add(run)
         return job_dict(row)
 
-    async def trigger(self, owner: str, key: str, config: dict, initiator: str = "manual") -> dict:
+    async def public_refresh_replay(self, owner: str, key: str) -> dict | None:
+        """Повтор принятого public запроса возвращает свой job даже после смены настроек."""
+        async with self.sessions() as session:
+            existing = await session.scalar(
+                select(JobRow).where(JobRow.owner == owner, JobRow.idempotency_hash == digest(key))
+            )
+            if existing is None:
+                return None
+            self.jobs._check(existing, owner)
+            if existing.kind != "catalog" or not existing.data.get("catalog_sync", {}).get(
+                "_public_refresh"
+            ):
+                raise MapperError(
+                    "idempotency_conflict", "Ключ использован для другого запроса", 409
+                )
+            return job_dict(existing)
+
+    async def trigger(
+        self,
+        owner: str,
+        key: str,
+        config: dict,
+        initiator: str = "manual",
+        minimum_interval: int = 0,
+        expected_revision: int | None = None,
+    ) -> dict:
         """Повтор одного ключа возвращает job; другой ключ во время импорта даёт 409."""
         async with self.transaction() as session:
-            await self._settings(session)
+            settings = await self._settings(session)
             existing = await session.scalar(
                 select(JobRow).where(
                     JobRow.owner == owner,
@@ -212,6 +238,12 @@ class SqlSyncRepository:
             )
             if existing:
                 self.jobs._check(existing, owner)
+                if (
+                    config.get("_public_refresh")
+                    and existing.kind == "catalog"
+                    and existing.data.get("catalog_sync", {}).get("_public_refresh")
+                ):
+                    return job_dict(existing)
                 expected = digest({"kind": "catalog", "payload": {"catalog_sync": config}})
                 legacy = config["source_type"] == "local_xml" and existing.request_hash == digest(
                     {"kind": "catalog", "payload": {}}
@@ -221,12 +253,51 @@ class SqlSyncRepository:
                         "idempotency_conflict", "Ключ использован с другим источником", 409
                     )
                 return job_dict(existing)
+            if expected_revision is not None and settings.revision != expected_revision:
+                raise MapperError(
+                    "revision_conflict", "Источник изменён; обновите настройки перед повтором", 409
+                )
+            rate = await session.get(ServiceActivityRow, "catalog_manual_refresh")
+            now = self.jobs.clock()
+            if minimum_interval and rate and rate.last_seen + minimum_interval > now:
+                raise MapperError(
+                    "catalog_refresh_cooldown",
+                    "Повторное обновление доступно через минуту",
+                    429,
+                    retry_after=ceil(rate.last_seen + minimum_interval - now),
+                )
             active = await self._active(session)
             if active:
                 raise MapperError(
                     "catalog_busy", "Импорт уже идёт; дождитесь завершения текущего job", 409
                 )
-            return await self._create(session, owner, key, config, initiator)
+            job = await self._create(session, owner, key, config, initiator)
+            if minimum_interval:
+                if rate:
+                    rate.last_seen = now
+                else:
+                    session.add(ServiceActivityRow(name="catalog_manual_refresh", last_seen=now))
+            return job
+
+    async def refresh_status(self) -> dict:
+        """Возвращает общий cooldown и безопасный прогресс без URL, credentials и owner."""
+        async with self.transaction() as session:
+            rate = await session.get(ServiceActivityRow, "catalog_manual_refresh")
+            retry = max(0, ceil(rate.last_seen + 60 - self.jobs.clock())) if rate else 0
+            active = await self._active(session)
+            progress = active.data.get("catalog_progress", {}) if active else {}
+            return {
+                "retry_after": retry,
+                "active": {
+                    "status": active.state,
+                    "stage": active.stage,
+                    "processed": progress.get("processed", 0),
+                    "total": progress.get("total", 0),
+                    "downloaded_bytes": active.data.get("downloaded_bytes", 0),
+                }
+                if active
+                else None,
+            }
 
     async def schedule(self, source_identity: str, revision: int | None = None) -> dict | None:
         """Захватывает последний UTC-слот ровно один раз и фиксирует следующий до

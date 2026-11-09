@@ -5,7 +5,7 @@ let operatorCsrf = "";
 
 export class ApiError extends Error {
   /** Сохраняет безопасный код backend без вывода исходного запроса. */
-  constructor(message, code, status) { super(message); this.code = code; this.status = status; }
+  constructor(message, code, status, retryAfter = 0) { super(message); this.code = code; this.status = status; this.retryAfter = retryAfter; }
 }
 
 export async function api(path, options = {}) {
@@ -21,7 +21,7 @@ export async function api(path, options = {}) {
     throw new ApiError("Нет соединения с сервисом. Проверьте сеть и повторите действие.", "network", 0);
   }
   const data = await response.json();
-  if (!response.ok) throw new ApiError(data.error?.message || "Запрос не выполнен", data.error?.code, response.status);
+  if (!response.ok) throw new ApiError(data.error?.message || "Запрос не выполнен", data.error?.code, response.status, Number(response.headers.get("Retry-After") || data.error?.retry_after || 0));
   return data;
 }
 

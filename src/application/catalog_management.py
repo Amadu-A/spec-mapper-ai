@@ -142,6 +142,64 @@ class CatalogManagement:
         await self.sources.validate(config, enabling=config["source_type"] == "http_onec")
         return await self.repository.schedule(self.sources.identity(config), current["revision"])
 
+    async def refresh_status(self, operator: bool = False) -> dict:
+        """Разрешает всем только подтверждённый HTTP источник; local XML остаётся оператору."""
+        current = await self.repository.settings()
+        reason = None
+        if current["source_type"] == "local_xml":
+            if not operator:
+                reason = "operator_required"
+        elif not self.defaults.onec_catalog_contract_confirmed:
+            reason = "onec_contract_required"
+        elif not self.valid_probe(current, fresh=False):
+            reason = "onec_probe_required"
+        if reason is None:
+            try:
+                await self.sources.validate(
+                    self.config(current), enabling=current["source_type"] == "http_onec"
+                )
+            except MapperError as exc:
+                reason = exc.code
+        status = await self.repository.refresh_status()
+        if reason is None:
+            reason = (
+                "catalog_refresh_cooldown"
+                if status["retry_after"]
+                else ("catalog_busy" if status["active"] else None)
+            )
+        return {
+            **status,
+            "available": reason is None,
+            "reason": reason,
+            "source_type": current["source_type"],
+            "interval_seconds": 60,
+        }
+
+    @timed("catalog_public_refresh")
+    async def refresh(self, owner: str, key: str, operator: bool = False) -> dict:
+        """Запускает текущий разрешённый источник с глобальным SQL cooldown в одну минуту."""
+        replay = await self.repository.public_refresh_replay(owner, key)
+        if replay:
+            return replay
+        current = await self.repository.settings()
+        config = self.config(current)
+        if config["source_type"] == "local_xml" and not operator:
+            raise MapperError(
+                "operator_required",
+                "Локальный XML обновляет оператор; HTTP 1С ещё не настроен",
+                403,
+            )
+        if config["source_type"] == "http_onec" and not self.valid_probe(current, fresh=False):
+            raise MapperError(
+                "onec_probe_required", "Нет подтверждённого HTTP-контракта источника 1С", 422
+            )
+        await self.sources.validate(config, enabling=config["source_type"] == "http_onec")
+        config["_source_identity"] = self.sources.identity(config)
+        config["_public_refresh"] = True
+        return await self.repository.trigger(
+            owner, key, config, "manual", minimum_interval=60, expected_revision=current["revision"]
+        )
+
     async def record_success(self, config: dict, result: dict) -> None:
         """Настоящий успешный HTTP импорт обновляет probe, если источник за время работы не
         изменили.

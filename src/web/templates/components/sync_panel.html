@@ -4,6 +4,7 @@
 <section class="sync-panel panel" aria-labelledby="sync-title" data-sync-panel>
   <div class="panel__head"><div class="panel__title">{{ icon('layers') }}<div><h2 id="sync-title">Справочник номенклатуры</h2><p>Импорт, обновление и индексация номенклатуры 1С</p></div></div><div class="panel__actions"><button class="button button--outline" type="button" data-sync-now disabled>{{ icon('refresh') }}Обновить сейчас</button><a class="button" data-sync-report aria-disabled="true">{{ icon('download') }}Скачать отчёт</a></div></div>
   <p class="sync-panel__access" data-sync-access>Проверка операторских полномочий…</p>
+  <p class="sync-panel__access" role="status" data-refresh-status>Проверка возможности ручного обновления…</p>
   <form class="sync-form" data-sync-form>
     <label class="switch"><input class="switch__input" type="checkbox" role="switch" name="enabled" data-sync-enabled disabled><span>Автоматически обновлять справочник номенклатуры</span></label>
     <div class="sync-form__fields">

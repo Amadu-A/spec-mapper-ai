@@ -9,6 +9,8 @@ export function createSync(operator,notify) {
   const root=document.querySelector("[data-sync-panel]");if(!root)return async()=>{};
   const form=root.querySelector("[data-sync-form]"),fields=[...form.elements].filter(n=>n.name);
   let saved=null,dirty=false,busy=false,active=false,loaded=false;
+  let refreshState=null,cooldownUntil=0,pendingRefreshKey=null;
+  const refreshButton=root.querySelector('[data-sync-now]');
   const errorNode=root.querySelector("[data-sync-error]");
   const showError=error=>{errorNode.textContent=error.message;errorNode.hidden=false;};
   function access() {
@@ -16,7 +18,15 @@ export function createSync(operator,notify) {
     fields.forEach(n=>{n.disabled=!operator||!saved||busy||(n.name==='url'&&!http)||(n.name==='enabled'&&!n.checked&&unverified);});
     root.querySelector("[data-save-sync]").disabled=!operator||!saved||busy;
     root.querySelector("[data-test-source]").disabled=!operator||!saved||busy||dirty;
-    root.querySelector("[data-sync-now]").disabled=!operator||!saved||busy||active||dirty||(http&&!saved?.is_configured);
+    const seconds=Math.max(0,Math.ceil((cooldownUntil-performance.now())/1000));
+    const allowed=refreshState?.available || (refreshState?.reason==='catalog_refresh_cooldown'&&!seconds&&!refreshState?.active);
+    refreshButton.disabled=busy||dirty||seconds>0||!allowed;
+    refreshButton.textContent=seconds?`Обновить через ${seconds} с`:'Обновить сейчас';
+    const reason=refreshState?.reason;
+    put('[data-refresh-status]',seconds?`Следующее ручное обновление доступно через ${seconds} с`:
+      refreshState?.active?'Обновление справочника выполняется':allowed?'Ручное обновление доступно не чаще раза в минуту':
+      reason==='operator_required'?'HTTP 1С ещё не настроен. Локальный XML обновляет оператор.':
+      reason==='onec_contract_required'?'Ожидается утверждённый HTTP-контракт 1С':'Источник ещё не подтверждён. Настройки меняет оператор.');
   }
   function render(value,reset=false) {
     saved=value;
@@ -24,7 +34,7 @@ export function createSync(operator,notify) {
     if(reset){dirty=false;put("[data-sync-save-status]","Настройки сохранены в PostgreSQL");}
     put("[data-secret-state]",`${value.secret_configured?'Серверные credentials настроены':'Credentials не настроены'} · ${value.contract_confirmed?'Контракт разрешён на сервере':'Ожидается утверждённый HTTP-контракт 1С'} · ${labels[value.probe?.state]||value.probe?.state||'Проверка не выполнялась'}${value.probe?.error_code?` (${value.probe.error_code})`:''}`);
     const description=root.querySelector("[data-sync-description] span");
-    description.textContent=value.enabled?`Ежедневно в ${value.time_utc} UTC будет запущено обновление из ${value.source_type==='local_xml'?'локального XML':'проверенного HTTP-источника 1С'}.`:`Автообновление выключено. Сохранённое время: ${value.time_utc} UTC. Ручной запуск доступен оператору.`;
+    description.textContent=value.enabled?`Ежедневно в ${value.time_utc} UTC будет запущено обновление из ${value.source_type==='local_xml'?'локального XML':'проверенного HTTP-источника 1С'}.`:`Автообновление выключено. Сохранённое время: ${value.time_utc} UTC. Ручной запуск не меняет расписание.`;
     put("[data-sync-next]",value.enabled?date(value.next_run_at):"Автообновление выключено");
     const link=root.querySelector("[data-source-link]");link.href=value.source_type==='http_onec'&&value.url?value.url:'/settings#onec-connection';link.target=value.source_type==='http_onec'?'_blank':'_self';link.rel='noopener noreferrer';
     access();
@@ -38,28 +48,33 @@ export function createSync(operator,notify) {
     put("[data-time-error]","");const value={revision:saved.revision};
     for(const field of fields)value[field.name]=field.type==='checkbox'?field.checked:field.type==='number'?Number(field.value):field.value;
     busy=true;access();
-    try{render(await api('/api/v1/catalog/sync-settings',{method:'PUT',body:JSON.stringify(value)}),true);notify("Расписание сохранено. Импорт при сохранении не запускается.");}
+    try{render(await api('/api/v1/catalog/sync-settings',{method:'PUT',body:JSON.stringify(value)}),true);await refresh();notify("Расписание сохранено. Импорт при сохранении не запускается.");}
     catch(error){showError(error);if(error.status===409)put("[data-sync-save-status]","Настройки изменены в другой сессии. Перезагрузите страницу перед повторным сохранением.");}
     finally{busy=false;access();}
   });
   root.querySelector("[data-test-source]").addEventListener('click',async()=>{
     busy=true;errorNode.hidden=true;access();
-    try{render(await api('/api/v1/catalog/connection-test',{method:'POST'}));notify(saved.probe?.state==='confirmed'?"Источник проверен. Каталог не изменён.":"Источник пока не подтверждён; смотрите статус контракта.");}
+    try{render(await api('/api/v1/catalog/connection-test',{method:'POST'}));await refresh();notify(saved.probe?.state==='confirmed'?"Источник проверен. Каталог не изменён.":"Источник пока не подтверждён; смотрите статус контракта.");}
     catch(error){showError(error);}finally{busy=false;access();}
   });
   root.querySelector("[data-sync-now]").addEventListener('click',async()=>{
-    if(!saved)return;busy=true;errorNode.hidden=true;access();
-    try{await api('/api/v1/catalog/imports',writeOptions({source_type:saved.source_type},newIdempotencyKey()));notify("Импорт поставлен в очередь");await refresh();}
-    catch(error){showError(error);}finally{busy=false;access();}
+    if(refreshButton.disabled)return;busy=true;errorNode.hidden=true;access();
+    pendingRefreshKey ||= newIdempotencyKey();
+    try{await api('/api/v1/catalog/refresh',writeOptions({},pendingRefreshKey));pendingRefreshKey=null;cooldownUntil=performance.now()+60000;notify("Импорт поставлен в очередь");await refresh();}
+    catch(error){if(error.retryAfter)cooldownUntil=performance.now()+error.retryAfter*1000;if(error.status&&error.status!==429)pendingRefreshKey=null;showError(error);await refresh();}finally{busy=false;access();}
   });
   async function refresh() {
     try {
-      const catalog=await api('/api/v1/catalog/status');
+      const [catalog,availability]=await Promise.all([api('/api/v1/catalog/status'),api('/api/v1/catalog/refresh-status')]);
+      refreshState=availability;cooldownUntil=performance.now()+availability.retry_after*1000;
       put('[data-sync-success]',date(catalog.last_successful_sync));put('[data-sync-version]',catalog.version||'Нет активной версии');put('[data-sync-hash]',`SHA-256: ${catalog.source_hash?catalog.source_hash.slice(0,8)+'…'+catalog.source_hash.slice(-8):'—'}`);root.querySelector('[data-sync-hash]').title=catalog.source_hash||'';
-      if(!operator){put('[data-sync-access]','Изменение настроек, запуск и отчёты доступны оператору. Войти: раздел «Доступ оператора».');
+      if(!operator){put('[data-sync-access]','Расписание, источник и общие отчёты доступны оператору. Подтверждённый HTTP-справочник может обновить каждый пользователь.');
         const summary=await api('/api/v1/dashboard/summary');
         if(!loaded){form.elements.time_utc.value=summary.schedule.time_utc;form.elements.enabled.checked=summary.schedule.enabled;form.elements.source_type.value=summary.schedule.source_type;loaded=true;}
-        put('[data-sync-description] span',summary.schedule.enabled?`Расписание включено: ${summary.schedule.time_utc} UTC`:'Автообновление выключено');put('[data-sync-next]',summary.schedule.enabled?date(summary.schedule.next_run_at):'Выключено');access();return;}
+        put('[data-sync-description] span',summary.schedule.enabled?`Расписание включено: ${summary.schedule.time_utc} UTC`:'Автообновление выключено');put('[data-sync-next]',summary.schedule.enabled?date(summary.schedule.next_run_at):'Выключено');
+        const progress=availability.active,panel=root.querySelector('[data-sync-progress]');panel.hidden=!progress;
+        if(progress){put('[data-sync-stage]',labels[progress.stage]||progress.stage);put('[data-sync-counts]',`${number(progress.processed)} / ${number(progress.total)} записей · ${number(progress.downloaded_bytes)} байт`);const meter=root.querySelector('[data-sync-meter]');if(progress.total){meter.max=progress.total;meter.value=progress.processed;}else meter.removeAttribute('value');}
+        put('[data-sync-processed]',number(catalog.statistics?.total_rows??catalog.count));access();return;}
       put('[data-sync-access]','Операторская сессия · секреты остаются на сервере');
       const [value,history]=await Promise.all([api('/api/v1/catalog/sync-settings'),api('/api/v1/catalog/import-history?limit=1')]);render(value);
       const run=history.items[0],panel=root.querySelector('[data-sync-progress]'),report=root.querySelector('[data-sync-report]');
@@ -74,5 +89,5 @@ export function createSync(operator,notify) {
       }access();
     }catch(error){showError(error);if(error.status===403){operator=false;access();put('[data-sync-access]','Сессия оператора истекла. Войдите повторно.');}}
   }
-  access();return refresh;
+  access();setInterval(()=>{if(!document.hidden)access();},1000);return refresh;
 }

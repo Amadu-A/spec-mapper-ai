@@ -13,7 +13,14 @@ from sqlalchemy import delete, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from src.domain.embedding import compatible_embedding
-from src.domain.models import TERMINAL, CatalogItem, MapperError, digest, ensure_approvable
+from src.domain.models import (
+    TERMINAL,
+    CatalogItem,
+    MapperError,
+    confirm_rows,
+    digest,
+    ensure_approvable,
+)
 from src.infrastructure.database import (
     ApprovalRow,
     CatalogEntryRow,
@@ -282,6 +289,7 @@ class SqlJobs:
                 .where(
                     JobRow.id == job_id,
                     JobRow.revision == revision,
+                    JobRow.state.in_(("complete", "ready_for_review")),
                     JobRow.expires_at > self.clock(),
                 )
                 .values(data=data, revision=revision + 1, state=state)
@@ -336,7 +344,12 @@ class SqlJobs:
             }
             for item in snapshot["items"]:
                 item["matching"]["approved"] = True
-            data = {**deepcopy(row.data), "approval": approval}
+            data = {
+                **deepcopy(row.data),
+                "approval": approval,
+                "rows": confirm_rows(row.data["rows"]),
+            }
+            data, delta = metric_delta(row, data, "approved")
             changed = await session.execute(
                 update(JobRow)
                 .where(
@@ -359,6 +372,7 @@ class SqlJobs:
                     snapshot=snapshot,
                 )
             )
+            await add_metrics(session, row, delta)
         return await self.get(job_id, owner)
 
     async def approved(self, job_id: str, owner: str) -> dict:

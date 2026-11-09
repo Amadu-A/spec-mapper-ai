@@ -22,8 +22,17 @@ claim, fenced checkpoint, ручной выбор+revision, stage и activate. �
 использует собственную короткую транзакцию; SQL не протекает в application.
 Ручной выбор блокирует строку и проверяет revision повторно через CAS update.
 Новый запрос со старой revision получает 409. Номера строк нулевые и стабильные.
-Approval блокирует ту же строку задания, повторно проверяет revision/спорные строки,
-атомарно сохраняет snapshot и переводит job в approved. Последующие selection запрещены.
+Approval блокирует ту же строку задания, повторно проверяет revision/готовность и
+одним явным действием подтверждает все текущие selection/null. Выбранная review
+становится manual, пустая — not_found, matched сохраняет автоматический статус;
+все строки получают confirmed/manually_reviewed. Rows, метрики и immutable snapshot
+фиксируются атомарно, job переходит в approved. Новые кандидаты не подбираются,
+source/TTL/revision сохраняются. Последующие selection запрещены. CAS ручного
+изменения также проверяет допустимое состояние, защищая конкурентный approve/clear.
+
+DELETE selection использует тот же use-case сохранения явного null с owner,
+CSRF и revision. Исходная строка и кандидаты не удаляются; изменение выбора
+увеличивает revision. Метрики отражают подтверждённую пустую строку без unresolved.
 
 Cookie owner и API owner изолированы; неверный API-ключ не переключается молча на cookie.
 Чужой job возвращает 404; собственный истёкший — 410 до очистки, затем 404.
@@ -106,3 +115,29 @@ Worker использует прежний outbox/processor; source override в�
 pipeline. Миграция 0003 добавляет отдельные настройки/историю/счётчики и не меняет 0001/0002.
 Browser модули разбиты по реальным страницам, источник истины — backend.
 [Точная семантика и ограничения](DASHBOARD_AND_SYNC.md).
+
+## Операторский вход и действия V3
+
+Публичный API остаётся на 8087. Для выдачи короткого operator-ticket кнопкой
+добавлен транспортный `operator-gateway` на loopback сервера 127.0.0.1:8088
+(`OPERATOR_PORT`). Он использует тот же image, не содержит бизнес-логики,
+подключён только к отдельной сети operator_access с API и не имеет ai-shared/Docker socket.
+SSH-туннель ведёт на этот listener. Gateway подписывает короткий 15-секундный
+proof существующим SESSION_SECRET и удаляет входящие служебные заголовки;
+сам Host=localhost не повышает роль. API проверяет proof, обычный web owner
+и CSRF до вызова прежнего ticket use-case. Код отображается пользователю, затем
+обменивается на прежнюю короткую HttpOnly operator cookie. CLI ticket сохранён.
+
+Пользовательский refresh берёт только неизменяемую конфигурацию сохранённого
+подтверждённого HTTP источника из SQL; local XML требует роли оператора. Под
+существующим advisory transaction lock выполняются replay, revision CAS,
+проверка общего 60-секундного cooldown, проверка active job и create+outbox+run.
+Cooldown хранится в service_activity и переживает смену browser owner/restart.
+Второй request в интервале получает 429/Retry-After; replay прежней операции
+не создаёт новый импорт. Scheduler и ручное действие используют прежний pipeline,
+ручной запуск не меняет next_run_at. Доверенный административный imports/CLI
+оставлен отдельным совместимым путём bootstrap без пользовательского cooldown.
+
+Новая миграция и новые секреты не требуются. Frontend добавляет общее подтверждение,
+очистку выбранного соответствия и локальный SVG favicon; browser не содержит
+правил ранжирования, credentials и общего administrative key.

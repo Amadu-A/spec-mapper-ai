@@ -51,34 +51,64 @@ def docker(*arguments: str, input_text: str | None = None, check: bool = True):
     return result
 
 
-def runtime_preflight() -> None:
-    """Проверяет Compose, сеть, host port, реальный XML и shared endpoint до записи секретов."""
-    settings = Settings()
-    docker("info")
-    version = docker("compose", "version", "--short").stdout.strip()
-    numbers = re.search(r"(\d+)\.(\d+)", version)
-    if numbers is None or tuple(map(int, numbers.groups())) < (2, 24):
-        raise MapperError("compose_version", "Требуется Docker Compose 2.24 или новее")
-    docker("network", "inspect", "ai-shared")
+def check_project_port(bind: str, port: int, service: str) -> None:
+    """Разрешает занятый порт только своему сервису; gateway публикуется строго на loopback."""
     with socket.socket() as connection:
         try:
-            connection.bind((settings.app_bind, settings.app_port))
+            connection.bind((bind, port))
         except OSError:
             ids = docker(
                 "ps",
                 "--filter",
                 "label=com.docker.compose.project=spec-mapper-ai",
                 "--filter",
-                "label=com.docker.compose.service=api",
+                "label=com.docker.compose.service=" + service,
                 "--format",
                 "{{.ID}}",
             ).stdout.split()
             if len(ids) != 1:
-                raise MapperError("port_busy", "Порт web/API занят другим процессом") from None
+                raise MapperError("port_busy", f"Порт {port} занят другим процессом") from None
             info = json.loads(docker("inspect", ids[0]).stdout)[0]
             bindings = info["NetworkSettings"]["Ports"].get("8000/tcp") or []
-            if not any(int(binding["HostPort"]) == settings.app_port for binding in bindings):
-                raise MapperError("port_busy", "Выбранный порт занят чужим приложением") from None
+            if service == "operator-gateway" and any(
+                int(value["HostPort"]) == port and value.get("HostIp") != "127.0.0.1"
+                for value in bindings
+            ):
+                raise MapperError(
+                    "gateway_public_binding", "SSH-вход должен быть доступен только на loopback"
+                ) from None
+            if not any(
+                int(value["HostPort"]) == port
+                and (service != "operator-gateway" or value.get("HostIp") == "127.0.0.1")
+                for value in bindings
+            ):
+                raise MapperError(
+                    "port_busy", f"Порт {port} не принадлежит разрешённому входу проекта"
+                ) from None
+
+
+def check_engine_version(value: str) -> None:
+    """Требует исправленную loopback-публикацию Docker перед запуском SSH gateway."""
+    numbers = re.search(r"(\d+)\.(\d+)", value)
+    if numbers is None or int(numbers.group(1)) < 28:
+        raise MapperError(
+            "docker_engine_version",
+            "Для защищённого SSH-входа требуется Docker Engine 28 или новее",
+        )
+
+
+def runtime_preflight() -> None:
+    """Проверяет Compose, сеть, host port, реальный XML и shared endpoint до записи секретов."""
+    settings = Settings()
+    docker("info")
+    check_engine_version(docker("version", "--format", "{{.Server.Version}}").stdout)
+    version = docker("compose", "version", "--short").stdout.strip()
+    numbers = re.search(r"(\d+)\.(\d+)", version)
+    if numbers is None or tuple(map(int, numbers.groups())) < (2, 24):
+        raise MapperError("compose_version", "Требуется Docker Compose 2.24 или новее")
+    docker("network", "inspect", "ai-shared")
+    check_project_port(settings.app_bind, settings.app_port, "api")
+    check_project_port("127.0.0.1", settings.operator_port, "operator-gateway")
     parsed = XmlCatalogSource(
         settings.data_directory, settings.max_xml_bytes, settings.duplicate_code_policy
     )._read()

@@ -1,0 +1,9 @@
+<!-- src/web/static/favicon.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>Spec Mapper AI</title>
+  <rect width="64" height="64" rx="14" fill="#192339"/>
+  <path d="M12 38 32 49 52 38v7L32 56 12 45Z" fill="#2768f5"/>
+  <path d="M12 27 32 38 52 27v7L32 45 12 34Z" fill="#4387ff"/>
+  <path d="m10 20 22-12 22 12-22 12Z" fill="#72a8ff"/>
+  <path d="m18 20 14-7 14 7-14 8Z" fill="#192339"/>
+</svg>

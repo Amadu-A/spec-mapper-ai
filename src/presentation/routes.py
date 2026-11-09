@@ -134,6 +134,26 @@ async def select(
     return public_status(job)
 
 
+@router.delete("/mappings/{job_id}/rows/{row_index}/selection", response_model=MappingStatus)
+async def clear_selection(
+    request: Request,
+    job_id: UUID,
+    row_index: int,
+    current: Owner,
+    revision: int = Query(ge=0),
+) -> dict:
+    """Удаляет только выбранное соответствие: исходная позиция сохраняется с явным null."""
+    return public_status(
+        await request.app.state.container.mappings.select(
+            current,
+            str(job_id),
+            row_index,
+            None,
+            revision,
+        )
+    )
+
+
 @router.get("/mappings/{job_id}/source.json", response_model=SourceDocument)
 async def original(request: Request, job_id: UUID, current: Owner) -> Response:
     """Отдаёт только исходный пятиколоночный документ без добавленных полей сопоставления."""

@@ -54,6 +54,8 @@ x-app: &app
     CATALOG_STAGING_DIRECTORY: ${CATALOG_STAGING_DIRECTORY:-staging}
     OPERATOR_SESSION_SECONDS: ${OPERATOR_SESSION_SECONDS:-900}
     OPERATOR_TICKET_SECONDS: ${OPERATOR_TICKET_SECONDS:-120}
+    OPERATOR_PORT: ${OPERATOR_PORT:-8088}
+    OPERATOR_GATEWAY_BASE_URL: ${OPERATOR_GATEWAY_BASE_URL:-http://api:8000}
     WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-45}
     ONEC_CATALOG_URL: ${ONEC_CATALOG_URL:-}
     ONEC_CATALOG_HTTP_METHOD: ${ONEC_CATALOG_HTTP_METHOD:-GET}
@@ -129,10 +131,38 @@ services:
       postgres: {condition: service_healthy}
   api:
     <<: *app
+    networks: [private, ai-shared, operator_access]
     ports: ['${APP_BIND:-0.0.0.0}:${APP_PORT:-8087}:8000']
     depends_on:
       migrate: {condition: service_completed_successfully}
       qdrant: {condition: service_started}
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  operator-gateway:
+    image: spec-mapper-ai:local
+    command: [/app/.venv/bin/uvicorn, src.operator_gateway:create_gateway, --factory, --host, 0.0.0.0, --port, "8000", --no-access-log, --no-proxy-headers]
+    environment:
+      APP_PORT: ${APP_PORT:-8087}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      OPERATOR_PORT: ${OPERATOR_PORT:-8088}
+      OPERATOR_GATEWAY_BASE_URL: ${OPERATOR_GATEWAY_BASE_URL:-http://api:8000}
+      MAX_RESULT_BYTES: ${MAX_RESULT_BYTES:-15000000}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+    ports: ['127.0.0.1:${OPERATOR_PORT:-8088}:8000']
+    networks: [operator_access]
+    depends_on:
+      api: {condition: service_started}
+    logging: *logging
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     healthcheck:
       test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=3)"]
       interval: 15s
@@ -157,6 +187,8 @@ services:
 networks:
   private:
     internal: true
+  operator_access:
+    driver: bridge
   ai-shared:
     external: true
     name: ai-shared

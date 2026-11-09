@@ -42,6 +42,23 @@ class OperatorLogin(BaseModel):
     ticket: str = Field(min_length=32, max_length=128)
 
 
+class RefreshRequest(BaseModel):
+    """Пользователь запускает сохранённый источник без возможности подменить его параметры."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RefreshAvailability(BaseModel):
+    """Общий минутный интервал и безопасный прогресс, доступные обычной сессии."""
+
+    available: bool
+    reason: str | None
+    source_type: str
+    retry_after: int
+    interval_seconds: int
+    active: dict | None
+
+
 class CatalogImportStatus(MappingStatus):
     """Расширенный прогресс каталога, не меняющий ответы mapping endpoints."""
 

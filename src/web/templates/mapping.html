@@ -4,7 +4,7 @@
 {% block content %}
 <section data-view="mapping">
   <div class="heading"><div><h1>Сопоставление спецификации</h1><p>Подбор номенклатуры 1С для каждой позиции с возможностью ручной корректировки</p></div><div class="heading__actions"><a class="button" data-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-export="result.json" aria-disabled="true">↓ Предварительный JSON</a><a class="button" data-export="result.xlsx" aria-disabled="true">↓ Excel</a><a class="button button--primary" data-export="approved.json" aria-disabled="true">↓ Утверждённый JSON</a></div></div>
-  <section class="workspace workspace--padded"><p data-approval-status role="status">После проверки строк утвердите общий результат для передачи в 1С.</p><button class="button button--primary" type="button" data-approve disabled>Утвердить результат</button></section>
+  <section class="workspace workspace--padded"><p data-approval-status role="status">«Утвердить результат» подтвердит все текущие соответствия и пустые строки. Ошибочный выбор можно убрать крестиком.</p><button class="button button--primary" type="button" data-approve disabled>Утвердить результат</button></section>
   <section class="source" aria-labelledby="source-title">
     <div><h2 id="source-title">Источник: spec-extracting-ai</h2><p class="source__status" data-job-status>Укажите ID задания извлечения или импортируйте готовый JSON</p></div>
     <form class="source__form" data-submit>

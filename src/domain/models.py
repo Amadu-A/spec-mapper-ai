@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from json import dumps
@@ -14,25 +15,31 @@ TERMINAL = {"ready_for_review", "complete", "failed", "approved"}
 
 
 def ensure_approvable(state: str, rows: list[dict]) -> None:
-    """Разрешает общее утверждение после подбора и явного решения всех спорных строк."""
+    """Разрешает явное общее подтверждение текущих выборов после завершения подбора."""
     if state not in {"complete", "ready_for_review"}:
         raise MapperError("approval_not_ready", "Сопоставление ещё не завершено", 409)
-    if any(
-        row["status"] == "review" or row["status"] == "not_found" and not row.get("confirmed")
-        for row in rows
-    ):
-        raise MapperError(
-            "unresolved_rows", "Подтвердите выбор или null для всех спорных строк", 409
-        )
+
+
+def confirm_rows(rows: list[dict]) -> list[dict]:
+    """Подтверждает текущие предложения и null, не выбирая нового кандидата за пользователя."""
+    confirmed = deepcopy(rows)
+    for row in confirmed:
+        if row["status"] == "review":
+            row["status"] = "manual" if row["selection"] else "not_found"
+        row.update(confirmed=True, manually_reviewed=True)
+    return confirmed
 
 
 class MapperError(Exception):
     """Передаёт безопасный код ожидаемой ошибки между слоями приложения."""
 
-    def __init__(self, code: str, message: str, status: int = 422) -> None:
+    def __init__(
+        self, code: str, message: str, status: int = 422, retry_after: int | None = None
+    ) -> None:
         """Сохраняет публичную диагностику без исходного текста документов и credentials."""
         super().__init__(message)
         self.code, self.message, self.status = code, message, status
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)

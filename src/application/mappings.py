@@ -7,7 +7,7 @@ from uuid import UUID
 
 from src.application.ports import CatalogRepository, JobRepository
 from src.application.reports import export_json
-from src.domain.models import MapperError, ensure_approvable, validate_source
+from src.domain.models import MapperError, confirm_rows, ensure_approvable, validate_source
 from src.observability import timed
 
 
@@ -89,7 +89,8 @@ class MappingUseCases:
                     "revision_conflict", "Результат уже изменён; обновите revision", 409
                 )
             ensure_approvable(job["state"], job["data"]["rows"])
-        return await self.jobs.approve(job_id, owner, revision, key, export_json(job))
+        snapshot_job = {**job, "data": {**job["data"], "rows": confirm_rows(job["data"]["rows"])}}
+        return await self.jobs.approve(job_id, owner, revision, key, export_json(snapshot_job))
 
 
 def public_status(job: dict) -> dict:

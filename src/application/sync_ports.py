@@ -19,8 +19,24 @@ class SyncRepository(Protocol):
         """Сохраняет конфигурацию CAS и аудит без автоматического запуска импорта."""
         ...
 
-    async def trigger(self, owner: str, key: str, config: dict, initiator: str) -> dict:
+    async def trigger(
+        self,
+        owner: str,
+        key: str,
+        config: dict,
+        initiator: str,
+        minimum_interval: int = 0,
+        expected_revision: int | None = None,
+    ) -> dict:
         """Создаёт один catalog job и audit run в общей транзакции с защитой от дублей."""
+        ...
+
+    async def refresh_status(self) -> dict:
+        """Читает глобальный минутный интервал и обезличенный прогресс активного импорта."""
+        ...
+
+    async def public_refresh_replay(self, owner: str, key: str) -> dict | None:
+        """Читает только свой уже принятый public refresh без запуска нового импорта."""
         ...
 
     async def schedule(self, source_identity: str, revision: int | None = None) -> dict | None:

@@ -71,7 +71,12 @@ def create_app(container: Container | None = None) -> FastAPI:
     @app.exception_handler(MapperError)
     async def expected_error(request: Request, error: MapperError) -> JSONResponse:
         """Отображает предметную ошибку без credentials и confidential payload."""
-        return JSONResponse({"error": {"code": error.code, "message": error.message}}, error.status)
+        details = {"code": error.code, "message": error.message}
+        headers = {}
+        if error.retry_after is not None:
+            details["retry_after"] = error.retry_after
+            headers["Retry-After"] = str(error.retry_after)
+        return JSONResponse({"error": details}, error.status, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError) -> JSONResponse:

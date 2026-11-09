@@ -120,19 +120,17 @@ async def test_onec_chain_named_owners_source_link_and_immutable_approval(system
 
 
 async def test_unresolved_null_approval_and_ttl(system, source):
-    """Пустой Top-K требует явного null, approval immutable и удаляется после исходного TTL."""
+    """Общее утверждение подтверждает пустой Top-K, сохраняет null и исходный TTL."""
     container, *_ = system
     container.index.collections[container.index.alias] = {}
     job = await container.mappings.import_document("owner", "empty-hits", source)
     await container.processor.process(job["id"])
     ready = await container.jobs.get(job["id"])
-    with pytest.raises(MapperError) as error:
-        await container.mappings.approve("owner", job["id"], ready["revision"], "a")
-    assert error.value.code == "unresolved_rows"
-    for index in range(2):
-        ready = await container.mappings.select("owner", job["id"], index, None, ready["revision"])
     done = await container.mappings.approve("owner", job["id"], ready["revision"], "a")
     assert done["expires_at"] == ready["expires_at"]
+    assert done["revision"] == ready["revision"]
+    assert all(row["confirmed"] for row in done["data"]["rows"])
+    assert all(row["status"] == "not_found" for row in done["data"]["rows"])
     assert all(
         row["onec"] is None for row in (await container.jobs.approved(job["id"], "owner"))["items"]
     )

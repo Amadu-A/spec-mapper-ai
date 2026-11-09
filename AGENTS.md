@@ -60,9 +60,9 @@
 
 Единые Pydantic Settings. `.env.example` содержит каталог безопасных настроек и placeholders, `.env` только реальные секреты/частные overrides; приоритет явно проверять в Python и Compose (environment > .env > defaults). `uv`, закреплённый `uv.lock`, Alembic, Ruff и pytest. Стек создаёт только собственные ресурсы. `bash scripts/up.sh` после clone безопасно подготавливает project secrets, изолированного пользователя/vhost RabbitMQ (без изменения чужих credentials), применяет миграции, запускает только собственные API/worker/PostgreSQL/Qdrant, проверяет real health и показывает безопасные адреса. Повторный запуск идемпотентен, не удаляет volumes. Недоступный shared endpoint — not ready с диагностикой, не silent fallback.
 
-## 7. API-контракты (новый проект, окончательно утверждаются реализацией)
+## 7. API-контракты
 
-Предлагаемые внешние маршруты:
+Основные реализованные внешние маршруты:
 
 - `POST /api/v1/mappings` — `source_job_id` UUID (обязательно), `Idempotency-Key` и API-ключ. Создать задачу ожидания upstream.
 - `GET /api/v1/mappings/{job_id}` — статус, counts, stage, error_code, TTL и links.
@@ -70,11 +70,15 @@
 - `GET /api/v1/mappings/{job_id}/candidates?row_index=N` — Top-K для строки.
 - `GET /api/v1/catalog/items?q=...&limit=...` — поиск номенклатуры по коду, названию и артикулу.
 - `PUT /api/v1/mappings/{job_id}/rows/{row_index}/selection` — ручное переопределение `catalog_item_guid` либо `null`.
+- `DELETE /api/v1/mappings/{job_id}/rows/{row_index}/selection?revision=N` — очистить только соответствие с сохранением исходной строки и Top-K.
+- `POST /api/v1/mappings/{job_id}/approve` — явно подтвердить все текущие выборы/null после завершённого подбора одной атомарной операцией.
 - `GET /api/v1/mappings/{job_id}/result.xlsx` — итоговый Excel.
 - `POST /api/v1/catalog/imports` — инициировать проверенную переиндексацию XML из разрешённого `data/` (только привилегированный project credential).
 - `GET /api/v1/catalog/status` — число записей, fingerprint, состояние индекса и дата последней синхронизации.
+- `POST /api/v1/catalog/refresh` — пользовательское обновление сохранённого подтверждённого HTTP источника (local XML только оператору), с общим минутным SQL cooldown.
 
-Не обещать, что эти **новые** endpoints уже существуют: они проектируются в `spec-mapper-ai`. Точные схемы OpenAPI закрепить контрактными тестами до подключения внешних клиентов.
+Точные схемы OpenAPI и совместимость закреплять контрактными тестами. Не объявлять
+неизвестную live-интеграцию HTTP 1С настроенной по одному URL или наличию ключа.
 
 ## 8. Тесты и завершение работы
 
@@ -88,9 +92,33 @@ Definition of Done: после clone и одного `bash scripts/up.sh` сер
 
 Главная следует предоставленному `renders/render_v2.png`; прежняя таблица — `/mapping`,
 старые deep links сохраняют owner. Оператор без регистрации получает короткую сессию
-через одноразовый SSH CLI ticket и HTTPS/localhost туннель; API-ключи в браузер не выдаются.
+через одноразовый ticket в доверенном SSH-входе или резервный CLI-код; API-ключи в браузер не выдаются.
 Оператор видит только общую мета-статистику чужих jobs. После bootstrap расписание
 живёт в PostgreSQL: OFF/15:00 UTC по умолчанию, один слот дата+источник, безопасный catch-up.
 Локальный XML и HTTP full XML используют один pipeline; неизвестный контракт 1С
 не разрешает HTTP publication. Новые миграции additive, staging/volumes не сбрасываются.
 Точный workflow, безопасность, метрики и API: [DASHBOARD_AND_SYNC](docs/DASHBOARD_AND_SYNC.md).
+
+## 10. Упрощённый операторский вход и утверждение V3
+
+Кнопка выдачи ticket работает только через loopback сервера 127.0.0.1:8088
+(`OPERATOR_PORT`) и gateway в отдельной сети operator_access без ai-shared/Docker socket. Подписанный
+15-секундный proof использует существующий SESSION_SECRET; нужны обычный web owner
+и CSRF. Host=localhost сам по себе не является авторизацией. Публичный 8087 сохранён.
+В SSH-инструкции пользователь вводит собственный логин; после доверенного входа
+инструкция скрывается. Старый туннель на 8087 поддерживает CLI-ticket fallback.
+
+Только оператор меняет auto-update, время и источник. GUI в обоих режимах использует
+пользовательский refresh с глобальным 60-секундным SQL cooldown, replay и revision
+CAS; обычному owner разрешён только сохранённый проверенный HTTP источник, оператору
+также local XML. Настройки URL/секреты не принимаются из public refresh payload.
+Ручной запуск не сдвигает scheduler. Административный imports/CLI сохранён без нового
+пользовательского лимита для bootstrap/совместимости. Новые секреты и миграции не нужны.
+
+Готовое сопоставление утверждается целиком одним явным действием пользователя:
+текущие review+selection становятся manual, review+null — not_found, matched
+сохраняются; все строки confirmed/manually_reviewed. Rows, метрики и immutable
+snapshot фиксируются атомарно, source/TTL не меняются. Не подбирать новый Top-1
+вместо null. Крестик удаляет только selection через DELETE с owner/CSRF/revision,
+не исходную строку/кандидатов; после approved изменения запрещены. SVG favicon
+продолжает существующий логотип. Offline/mocked и live результаты разделять.

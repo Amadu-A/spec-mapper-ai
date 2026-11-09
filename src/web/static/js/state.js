@@ -7,6 +7,14 @@ export function terminal(status) {
   /** Завершает технический polling, даже если кандидаты требуют ручной проверки. */
   return ["complete", "ready_for_review", "approved", "failed"].includes(status);
 }
+export function canApprove(status, busy = false) {
+  /** Общее подтверждение доступно после подбора, включая спорные предложения и null. */
+  return !busy && ["complete", "ready_for_review"].includes(status);
+}
+export function clearSelectionRequest(jobId, index, revision) {
+  /** Удаляет только соответствие строки с актуальной revision, сохраняя исходный документ. */
+  return { path: `/api/v1/mappings/${jobId}/rows/${index}/selection?revision=${revision}`, options: { method: "DELETE" } };
+}
 export function validUuid(value) {
   /** Проверяет форму UUID до создания запроса; окончательная валидация остаётся на сервере. */
   return /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value);
