@@ -24,7 +24,7 @@ tests/               unit, API, regression, architecture, browser, live
 ## Настройки
 
 Обычные настройки — в `.env.example` или окружении команды. Pydantic и Compose:
-**окружение → `.env` → `.env.example` → defaults**. `.env` содержит только секреты.
+**окружение → `.env` → `.env.example` → defaults**. `.env` содержит секреты и необходимые частные overrides.
 Первый запуск атомарно создаёт отсутствующие `DATABASE_PASSWORD`, `RABBITMQ_PASSWORD`,
 `SESSION_SECRET`, `CATALOG_ADMIN_KEY`, `ONEC_CATALOG_WEBHOOK_KEY` и `API_KEYS`
 с отдельными ключами `onec`/`telegram`.
@@ -66,10 +66,15 @@ DB/Qdrant наружу не публикуются. Доступ — LAN/VPN; п
 неизменённые позиции повторно не векторизуются. Ежедневная полная сверка выключена
 по умолчанию, время 15:00 UTC. Поддержаны полный JSON/XML по HTTP и durable webhook 1С.
 XML не обязателен для HTTP bootstrap или запуска с проверенным сохранённым каталогом.
-При первом HTTP bootstrap задайте `CATALOG_SOURCE_TYPE=http_onec`; после инициализации
-источником управляет PostgreSQL/GUI. Реальный HTTP-адрес из ТЗ пока блокируется:
-нужны HTTPS, сервисные credentials и согласованный `X-Catalog-Complete: true`.
-`ONEC_CATALOG_CONTRACT_CONFIRMED` остаётся `false` до реальной проверки.
+`CATALOG_SOURCE_TYPE=local_xml` остаётся bootstrap fallback; в установленном сервисе
+источник HTTP сохраняет оператор через GUI в PostgreSQL. Изменение env его не подменяет.
+12.11.2026 владелец проверил `/export`, `/items` и `/items/batch` с Ubuntu,
+доступ к 1С также подтверждён из API-контейнера Mapper.
+Для этого адреса разрешён Basic с непустым username и пустым паролем при явном
+`ONEC_CATALOG_ALLOW_HTTP=true` и точном allowlist. По умолчанию HTTP запрещён;
+Bearer требует HTTPS. После установки исправления выполните
+[настройку, probe и первый импорт](docs/INTEGRATION_1C.md#подключение-подтверждённого-http-api).
+Реальная доставка webhook из 1С ещё не проверена.
 
 ## Проверки
 
@@ -110,7 +115,7 @@ ssh -N -L 18087:127.0.0.1:8088 ВАШ_ЛОГИН@192.168.55.3
 1С, с общим интервалом 60 секунд; локальный XML через UI обновляет оператор.
 Общее утверждение подтверждает текущие выборы/null всех строк сразу, крестик
 очищает только ошибочное соответствие. Фавикон выполнен в стиле логотипа.
-HTTP 1С ожидает утверждённый контракт. Пароли/token задаются только на сервере через
+Подключение подтверждённого HTTP API включается владельцем отдельно. Пароли/token задаются только на сервере через
 Pydantic Settings; браузер видит лишь credential reference и признак наличия.
 
 [Подробности главной, API, настроек и безопасности](docs/DASHBOARD_AND_SYNC.md).

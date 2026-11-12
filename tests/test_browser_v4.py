@@ -60,6 +60,8 @@ async def test_v4_source_fields_and_operator_event_ui(onec_system, extended_sour
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             await page.goto(base + "/mapping")
+            # Обработчик импорта подключается после асинхронной инициализации сессии.
+            await expect(page.locator("[data-catalog-date]")).to_contain_text("Каталог:")
             await page.locator("[data-import]").set_input_files(
                 {
                     "name": "extended.json",

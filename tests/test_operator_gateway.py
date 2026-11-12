@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -314,7 +315,10 @@ async def test_browser_gateway_button_and_public_fallback(system):
             await expect(page.locator("[data-ssh-instructions]")).to_be_visible()
             await page.locator("[data-ssh-instructions]").evaluate("node => node.open = true")
             await page.locator("[data-ssh-user]").fill("alice")
-            await expect(page.locator("[data-ssh-command]")).to_contain_text("alice@")
+            ssh_host = urlsplit(container.settings.app_public_base_url).hostname
+            await expect(page.locator("[data-ssh-command]")).to_have_text(
+                f"ssh -N -L 18087:127.0.0.1:{container.settings.operator_port} alice@{ssh_host}"
+            )
             assert "main@" not in await page.content()
             assert not errors
             await browser.close()

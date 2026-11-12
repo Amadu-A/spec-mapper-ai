@@ -43,10 +43,8 @@ class CatalogSourceFactory:
             return True
         if config["auth_type"] == "bearer":
             return bool(self.settings.onec_catalog_token.get_secret_value())
-        return bool(
-            self.settings.onec_catalog_username.get_secret_value()
-            and self.settings.onec_catalog_password.get_secret_value()
-        )
+        # Подтверждённая 1С допускает пустой Basic password; username обязателен.
+        return bool(self.settings.onec_catalog_username.get_secret_value())
 
     def identity(self, config: dict) -> str:
         """Связывает probe с источником и ротацией credentials через закрытый HMAC."""
@@ -150,9 +148,9 @@ class CatalogSourceFactory:
             raise MapperError("invalid_source_limits", "Проверьте timeout и лимит каталога", 422)
         if config.get("url"):
             self.validate_url(config["url"])
-            if config["url"].startswith("http:") and config["auth_type"] != "none":
+            if urlsplit(config["url"]).scheme == "http" and config["auth_type"] == "bearer":
                 raise MapperError(
-                    "onec_https_required", "Credentials 1С передаются только по HTTPS", 422
+                    "onec_https_required", "Bearer 1С передаётся только по HTTPS", 422
                 )
         if enabling:
             if not self.settings.onec_catalog_contract_confirmed:

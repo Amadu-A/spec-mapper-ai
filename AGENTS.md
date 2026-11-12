@@ -128,8 +128,11 @@ snapshot фиксируются атомарно, source/TTL не меняютс
 HTTP JSON GET/export и POST/items/batch используют общий защищённый transport и
 ParsedCatalog pipeline наряду с XML. Полный JSON требует completion marker,
 строгих типов, bounded streaming и shrink guard. Реальный адрес из ТЗ не означает
-авторизованный production транспорт: HTTP Basic и пустой пароль не разрешены.
-ONEC_CATALOG_CONTRACT_CONFIRMED остаётся false до реального подтверждения.
+авторизованный транспорт. По умолчанию HTTP запрещён. Владелец подтвердил 12.11.2026
+HTTP Basic для конкретного API 1С: ONEC_CATALOG_ALLOW_HTTP=true с точным allowlist
+разрешает Basic, непустой username обязателен, пустой пароль допустим и не подменяется.
+Bearer по HTTP по-прежнему запрещён. CONTRACT_CONFIRMED включается владельцем после
+подтверждения контракта/доступа; probe и первый импорт проверяются отдельно.
 
 Webhook POST /api/v1/catalog/events имеет отдельный server-only ключ,
 durable PG inbox/dedup и существующий Rabbit job outbox/lease/fence. 202 только

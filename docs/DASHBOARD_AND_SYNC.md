@@ -148,7 +148,7 @@ XML/JSON; успех обновляет timestamp probe. При ротации c
 источника, как scheduler. Для V3 новая миграция не нужна: cooldown
 хранится в существующей `service_activity`, остальные таблицы 0001–0003 сохраняются.
 
-## Источник HTTP: готовая архитектура, реальный контракт ожидается
+## Источник HTTP: контракт и явное разрешение подключения
 
 Локальный `data/*.xml` полностью поддерживается. HTTP адаптер использует тот же
 ParsedCatalog и SynchronizeCatalogUseCase. V4 добавляет GET **полного JSON**
@@ -159,7 +159,7 @@ ParsedCatalog и SynchronizeCatalogUseCase. V4 добавляет GET **полн
 Открытые поля GUI: source_type, url, GET, auth_type none/basic/bearer,
 credential_ref=onec_catalog, expected_format=json|xml, export_mode=full, timeout_seconds,
 max_bytes, completion_header/value. Параметры заголовка завершённости берутся **из
-согласованного контракта**. Предложен `X-Catalog-Complete: true`, подтверждение 1С ожидается.
+согласованного контракта**. `X-Catalog-Complete: true` подтверждён владельцем 12.11.2026.
 Полная выгрузка должна иметь достоверный признак завершённости; корректный XML без
 такого подтверждения не даёт права удалять отсутствующие позиции.
 
@@ -168,7 +168,9 @@ Server-only Pydantic Settings: `ONEC_CATALOG_ALLOWED_HOSTS`,
 `ONEC_CATALOG_ALLOW_HTTP=false`. Для private IP нужны явные сети/IP. Проверяются
 все DNS-ответы, соединение закреплено за проверенным IP с исходным Host/TLS SNI.
 Loopback/link-local/metadata/multicast/unspecified запрещены. Redirect не следует.
-URL не допускает userinfo/query/fragment. Basic/Bearer через HTTP запрещены.
+URL не допускает userinfo/query/fragment. Для подтверждённого адреса 1С при явном
+`ONEC_CATALOG_ALLOW_HTTP=true` разрешён Basic с непустым username, включая пустой
+пароль; host/IP/port allowlist и остальные проверки сохраняются. Bearer по HTTP запрещён.
 Не отключать проверку TLS: доверенный CA настраивается инфраструктурой.
 
 Реальные username/password/token — только `ONEC_CATALOG_USERNAME`,
@@ -183,10 +185,15 @@ HTTP 200, content-type, отсутствие partial/range/compression, completi
 схема XML/XXE либо bounded JSON/типы/дубли. Неудача удаляет только временную загрузку, сохраняет рабочий
 каталог/alias. Старая незавершённая PG/Qdrant staging-версия не удаляется этим cleanup.
 
-**Для live 1С ожидаются:** completion marker, read-only сервисная учётная запись,
-безопасный транспорт и авторизованный сетевой доступ из api/worker. URL/JSON уже
-предоставлены владельцем. До подтверждения — `blocked_by_external_1c`, mock зелёным
-live не объявляется. `ONEC_CATALOG_CONTRACT_CONFIRMED=false` сохраняется.
+**Проверено владельцем 12.11.2026:** `/export`, `/items`, `/items/batch` отвечают 200
+с Ubuntu; GET `/items` также проверен из API-контейнера Mapper.
+Полный JSON: 65 493 карточки, 3 439 удалённых,
+23 857 863 байта, 42,57 секунды, completion marker подтверждён. Явное разрешение
+HTTP Basic для этого API не включается автоматически: после установки исправления
+владелец задаёт частные overrides, подтверждает контракт и выполняет probe/импорт.
+HTTP и `CONTRACT_CONFIRMED` по умолчанию остаются выключенными. Реальный webhook
+из 1С ещё не проверен; mock не объявляется live-pass.
+[Настройка подтверждённого подключения](INTEGRATION_1C.md#подключение-подтверждённого-http-api).
 
 V4 добавляет registry реальный GUID → внутренний UUID. Однозначный прежний код
 сохраняет внутренний UUID, внешняя ссылка попадает только в `onec_guid`.
