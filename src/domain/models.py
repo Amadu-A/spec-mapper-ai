@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from json import dumps
 from typing import Any
 
-SOURCE_FIELDS = ("Caption", "Units", "Quantity", "UserComment1", "Pages")
-ALGORITHM_VERSION = "technical-baseline-v2"
+LEGACY_SOURCE_FIELDS = ("Caption", "Units", "Quantity", "UserComment1", "Pages")
+SOURCE_FIELDS = (*LEGACY_SOURCE_FIELDS, "Brand", "Article", "Note")
+ALGORITHM_VERSION = "technical-baseline-v3-explicit-attributes"
 TERMINAL = {"ready_for_review", "complete", "failed", "approved"}
 
 
@@ -56,6 +58,8 @@ class CatalogItem:
     manufacturer: str = ""
     group: str = ""
     active: bool = True
+    short_name: str = ""
+    full_name: str = ""
 
     def to_dict(self) -> dict:
         """Готовит независимое представление позиции для хранения и API."""
@@ -63,8 +67,15 @@ class CatalogItem:
 
     @property
     def content_hash(self) -> str:
-        """Связывает вектор со всеми исходными характеристиками конкретной позиции."""
+        """Определяет изменения метаданных независимо от embedding fingerprint."""
         return digest(self.to_dict())
+
+    @property
+    def legacy_content_hash(self) -> str:
+        """Находит старый кэш V1–V3 без добавленных в V4 полей."""
+        return digest(
+            {k: v for k, v in self.to_dict().items() if k not in {"short_name", "full_name"}}
+        )
 
 
 @dataclass(frozen=True)
@@ -84,12 +95,40 @@ class Candidate:
 
 @dataclass
 class ParsedCatalog:
-    """Проверенный снимок XML и явная диагностика неоднозначных кодов."""
+    """Проверенный снимок каталога и явная диагностика неоднозначных кодов."""
 
     items: list[CatalogItem]
     source_hash: str
     warnings: list[str] = field(default_factory=list)
     statistics: dict = field(default_factory=dict)
+    records: list[CatalogItem] = field(default_factory=list)
+    context: dict = field(default_factory=dict)
+
+
+def active_catalog(
+    records: list[CatalogItem], duplicate_policy="quarantine"
+) -> tuple[list, list, dict]:
+    """Исключает все неоднозначные коды и deleted одинаково для full и webhook batch."""
+    counts = Counter(item.code for item in records)
+    conflicts = sorted(code for code, count in counts.items() if count > 1)
+    if conflicts and duplicate_policy == "reject":
+        raise MapperError("duplicate_code", "Каталог содержит конфликтующие коды номенклатуры")
+    active = [item for item in records if item.active and item.code not in conflicts]
+    warnings = (
+        ["Карантин: исключены все записи с кодами " + ", ".join(conflicts)] if conflicts else []
+    )
+    return (
+        active,
+        warnings,
+        {
+            "total_rows": len(records),
+            "deleted_rows": sum(not item.active for item in records),
+            "conflicting_codes": conflicts,
+            "quarantined_rows": sum(counts[c] for c in conflicts),
+            "active_count": len(active),
+            "technical_repeats": 0,
+        },
+    )
 
 
 def digest(value: Any) -> str:
@@ -99,18 +138,34 @@ def digest(value: Any) -> str:
 
 def validate_source(payload: object, max_items: int = 10000) -> dict:
     """Отклоняет неполный контракт, числа вместо строк и лишние поля без исправлений."""
-    if not isinstance(payload, dict) or set(payload) != {"items"}:
-        raise MapperError("invalid_source", "Ожидается JSON с единственным полем items")
+    if not isinstance(payload, dict) or set(payload) not in ({"items"}, {"file_name", "items"}):
+        raise MapperError(
+            "invalid_source", "Ожидается JSON с единственным items или file_name и items"
+        )
+    extended = "file_name" in payload
+    if extended and (not isinstance(payload["file_name"], str) or len(payload["file_name"]) > 180):
+        raise MapperError("invalid_source", "file_name должен быть строкой до 180 символов")
     items = payload["items"]
     if not isinstance(items, list) or len(items) > max_items:
         raise MapperError("invalid_source", "Недопустимое количество строк спецификации")
     for row in items:
-        if not isinstance(row, dict) or set(row) != set(SOURCE_FIELDS):
+        expected = SOURCE_FIELDS if extended else LEGACY_SOURCE_FIELDS
+        if not isinstance(row, dict) or set(row) != set(expected):
             raise MapperError(
-                "invalid_source", "Каждая строка должна содержать пять исходных полей"
+                "invalid_source", "Нужен полный набор исходных полей выбранной версии документа"
             )
         if any(not isinstance(v, str) or len(v) > 32000 for v in row.values()):
             raise MapperError(
                 "invalid_source", "Исходные поля должны быть строками до 32000 символов"
             )
+        if extended and any(
+            len(row[key]) > limit
+            for key, limit in (("Brand", 2000), ("Article", 4000), ("Note", 20000))
+        ):
+            raise MapperError("invalid_source", "Превышена длина Brand/Article/Note")
     return payload
+
+
+def source_view(row: dict) -> dict:
+    """Дополняет только производное представление legacy, не изменяя сохранённый оригинал."""
+    return {key: row.get(key, "") for key in SOURCE_FIELDS}

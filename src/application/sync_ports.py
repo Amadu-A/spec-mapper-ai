@@ -104,3 +104,7 @@ class CatalogSources(Protocol):
     async def probe(self, config: dict) -> dict:
         """Проверяет получение/валидацию полного источника, не создавая DB/Qdrant snapshot."""
         ...
+
+    async def batch(self, config: dict, guids: list[str]) -> list:
+        """Безопасно получает текущие карточки строго по запрошенным настоящим GUID."""
+        ...

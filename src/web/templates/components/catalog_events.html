@@ -1,0 +1,14 @@
+<!-- src/web/templates/components/catalog_events.html -->
+{# Счётчики из inbox; ключи и карточки браузеру не передаются. #}
+<section class="panel catalog-events" data-catalog-events aria-labelledby="catalog-events-title">
+  <div class="panel__head"><div><h2 id="catalog-events-title">События 1С</h2><p data-catalog-events-state role="status">Проверка состояния webhook…</p></div></div>
+  <div class="catalog-events__source"><label class="catalog-events__url">Адрес webhook<input class="input" type="url" readonly data-webhook-url aria-label="Адрес webhook для копирования"></label><button class="button" type="button" data-copy-webhook>Скопировать адрес</button></div>
+  <p>Ключ передаётся программисту 1С владельцем сервера. Здесь он не отображается.</p>
+  <dl class="catalog-events__counts">
+    {% for key, text in [('received','Получено'),('pending','Ожидают'),('applied','Применено'),('failed','Ошибки')] %}
+    <div><dt>{{ text }}</dt><dd data-event-count="{{ key }}">—</dd></div>
+    {% endfor %}
+  </dl>
+  <p>Последнее применение: <time data-event-last>—</time></p>
+  <div class="catalog-events__journal" data-event-journal hidden><h3>Последние доставки</h3><ul data-event-items></ul></div>
+</section>

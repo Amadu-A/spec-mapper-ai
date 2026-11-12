@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import replace
 from time import time
 from uuid import uuid4
 
@@ -24,6 +26,8 @@ from src.domain.models import (
 from src.infrastructure.database import (
     ApprovalRow,
     CatalogEntryRow,
+    CatalogEventRow,
+    CatalogIdentityRow,
     CatalogStateRow,
     CatalogVersionRow,
     JobRow,
@@ -65,7 +69,7 @@ def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float
         expires_at=now
         + (
             settings.catalog_import_timeout_seconds
-            if kind == "catalog"
+            if kind in {"catalog", "catalog_events"}
             else settings.draft_ttl_seconds
         ),
         data={
@@ -74,6 +78,9 @@ def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float
             "rows": [],
             "ingestion": "import-json" if "document" in payload else "extracting",
             **({"catalog_sync": payload["catalog_sync"]} if "catalog_sync" in payload else {}),
+            **(
+                {"catalog_events": payload["catalog_events"]} if "catalog_events" in payload else {}
+            ),
         },
     )
 
@@ -437,8 +444,81 @@ class SqlCatalog:
                 "version": state.active if state else None,
                 "last_successful_sync": state.last_successful_sync if state else None,
                 "last_error": state.last_error if state else None,
-                **(version.metadata_json if version else {}),
+                **(
+                    {k: v for k, v in version.metadata_json.items() if not k.startswith("_")}
+                    if version
+                    else {}
+                ),
             }
+
+    async def reconcile(self, source) -> None:
+        """Резервирует стабильные GUID под общим lock; immutable снимки и выборы не изменяет."""
+        records = source.records or source.items
+        if not any(item.onec_guid for item in records):
+            return
+        previous = await self.status()
+        old = (
+            await self.items(previous["version"], await self.guids(previous["version"]))
+            if previous.get("ready")
+            else {}
+        )
+        codes = {}
+        for item in old.values():
+            codes.setdefault(item.code, []).append(item)
+        quarantined = set(previous.get("statistics", {}).get("conflicting_codes", []))
+        current_codes = {}
+        for item in records:
+            current_codes[item.code] = current_codes.get(item.code, 0) + 1
+        mapped = {}
+        async with self.sessions.begin() as session:
+            registry = {
+                row.onec_guid: row for row in await session.scalars(select(CatalogIdentityRow))
+            }
+            used = {row.internal_guid for row in registry.values()}
+            for item in records:
+                if not item.onec_guid:
+                    mapped[item.guid] = item
+                    continue
+                binding = registry.get(item.onec_guid)
+                if binding is None:
+                    legacy = codes.get(item.code, [])
+                    safe = (
+                        len(legacy) == 1
+                        and not legacy[0].onec_guid
+                        and item.code not in quarantined
+                        and current_codes[item.code] == 1
+                        and legacy[0].guid not in used
+                    )
+                    internal = legacy[0].guid if safe else item.onec_guid
+                    binding = CatalogIdentityRow(
+                        onec_guid=item.onec_guid, internal_guid=internal, code=item.code
+                    )
+                    session.add(binding)
+                    registry[item.onec_guid] = binding
+                    used.add(internal)
+                binding.code = item.code
+                mapped[item.guid] = replace(item, guid=binding.internal_guid)
+        source.items = [mapped[item.guid] for item in source.items]
+        source.records = [mapped[item.guid] for item in records]
+        if source.context.get("event_context"):
+            deleted = source.context["event_context"].get("tombstones", {})
+            present = {item.onec_guid for item in source.records if item.onec_guid}
+            counts = Counter(
+                row.code
+                for row in registry.values()
+                if (not row.tombstone_at or row.onec_guid in present)
+                and row.onec_guid not in deleted
+            )
+            counts.update(item.code for item in source.records if not item.onec_guid)
+            conflicts = sorted(code for code, count in counts.items() if count > 1)
+            if conflicts:
+                source.items = [item for item in source.items if item.code not in conflicts]
+                source.statistics["conflicting_codes"] = sorted(
+                    set(source.statistics.get("conflicting_codes", [])) | set(conflicts)
+                )
+                source.statistics["active_count"] = len(source.items)
+                source.statistics["quarantined_rows"] = sum(counts[code] for code in conflicts)
+                source.warnings.append("Карантин GUID registry: " + ", ".join(conflicts))
 
     async def stage(self, version: str, items: list[CatalogItem], metadata: dict) -> None:
         """Фиксирует полный снимок в одной транзакции; активный указатель пока не меняется."""
@@ -471,8 +551,87 @@ class SqlCatalog:
                 state.previous, state.active = state.active, version
             snapshot = await session.get(CatalogVersionRow, version)
             if snapshot is not None:
+                context = snapshot.metadata_json.get("_event_context", {})
+                present = snapshot.metadata_json.get("_present_guids", [])
+                if present or snapshot.metadata_json.get("_full_json"):
+                    identities = await session.scalars(select(CatalogIdentityRow))
+                    present_set = set(present)
+                    for identity in identities:
+                        if identity.onec_guid in present_set:
+                            identity.tombstone_at = None
+                        elif snapshot.metadata_json.get("_full_json"):
+                            identity.tombstone_at = snapshot.metadata_json["_snapshot_at"]
+                if snapshot.metadata_json.get("_full_json"):
+                    await self._reconcile_events(session, snapshot.metadata_json, version)
+                if context and not snapshot.metadata_json.get("published"):
+                    job = await session.get(JobRow, context["job_id"], with_for_update=True)
+                    if (
+                        job is None
+                        or job.lease_token != context["lease_token"]
+                        or (job.lease_until or 0) <= time()
+                    ):
+                        raise MapperError("lease_lost", "Потеряна lease webhook job", 409)
+                    for event in await session.scalars(
+                        select(CatalogEventRow).where(CatalogEventRow.id.in_(context["event_ids"]))
+                    ):
+                        if event.job_id != job.id:
+                            raise MapperError(
+                                "event_fence_lost", "Пачка передана другому заданию", 409
+                            )
+                        event.state, event.applied_at, event.last_error, event.catalog_version = (
+                            "applied",
+                            time(),
+                            None,
+                            version,
+                        )
+                    for guid, occurred in context.get("tombstones", {}).items():
+                        identity = await session.get(CatalogIdentityRow, guid)
+                        if identity:
+                            identity.tombstone_at = max(identity.tombstone_at or 0, occurred)
+                        else:
+                            session.add(
+                                CatalogIdentityRow(
+                                    onec_guid=guid,
+                                    internal_guid=guid,
+                                    code="",
+                                    tombstone_at=occurred,
+                                )
+                            )
                 snapshot.metadata_json = {**snapshot.metadata_json, "published": True}
             state.last_successful_sync, state.last_error = time(), None
+
+    async def _reconcile_events(self, session, metadata: dict, version: str) -> None:
+        """Полный подтверждённый snapshot сверяет только события, принятые до начала download."""
+        at, present = metadata["_snapshot_at"], set(metadata["_present_guids"])
+        rows = await session.scalars(
+            select(CatalogEventRow).where(
+                CatalogEventRow.state != "applied",
+                CatalogEventRow.received_at <= at,
+                CatalogEventRow.occurred_at <= at,
+            )
+        )
+        for event in rows:
+            for change in event.changes:
+                if change["guid"] not in present:
+                    binding = await session.get(CatalogIdentityRow, change["guid"])
+                    if binding:
+                        binding.tombstone_at = at
+                    else:
+                        session.add(
+                            CatalogIdentityRow(
+                                onec_guid=change["guid"],
+                                internal_guid=change["guid"],
+                                code="",
+                                tombstone_at=at,
+                            )
+                        )
+                        await session.flush()
+            event.state, event.applied_at, event.last_error, event.catalog_version = (
+                "applied",
+                time(),
+                None,
+                version,
+            )
 
     async def resumable(self, source_hash: str, identity: dict) -> dict | None:
         """Возвращает только непубликовавшийся снимок с совместимыми XML и embedding identity."""

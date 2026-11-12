@@ -12,7 +12,8 @@ import pytest
 from openpyxl import load_workbook
 from sqlalchemy import func, select
 
-from src.domain.models import SOURCE_FIELDS, MapperError, confirm_rows
+from src.domain.models import LEGACY_SOURCE_FIELDS as SOURCE_FIELDS
+from src.domain.models import MapperError, confirm_rows
 from src.infrastructure.database import ApprovalRow
 from src.main import create_app
 from src.presentation.schemas import ApprovedExport
@@ -139,7 +140,8 @@ async def test_bulk_approval_mixed_states_snapshots_metrics_and_excel(system, so
         values = list(workbook.active.iter_rows(min_row=2, values_only=True))
         for actual, expected in zip(values, original["items"], strict=True):
             assert list(actual[:5]) == [expected[name] for name in SOURCE_FIELDS]
-            assert actual[12] == "Да"
+            headers = [cell.value for cell in workbook.active[1]]
+            assert actual[headers.index("Проверено человеком")] == "Да"
         assert workbook.active["D3"].data_type == "s"
 
 

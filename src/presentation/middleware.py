@@ -15,7 +15,15 @@ from starlette.responses import JSONResponse
 class LimitsMiddleware:
     """Ограничивает фактически полученные bytes до JSON parsing, включая chunked upload."""
 
-    def __init__(self, app, max_bytes: int, per_minute: int, timeout: int) -> None:
+    def __init__(
+        self,
+        app,
+        max_bytes: int,
+        per_minute: int,
+        timeout: int,
+        webhook_max_bytes=32768,
+        webhook_per_minute=120,
+    ) -> None:
         """Задаёт общие лимиты одного API-процесса; reverse proxy не считается доверенным."""
         self.app, self.max_bytes, self.per_minute, self.timeout = (
             app,
@@ -24,6 +32,7 @@ class LimitsMiddleware:
             timeout,
         )
         self.requests = defaultdict(deque)
+        self.webhook_max_bytes, self.webhook_per_minute = webhook_max_bytes, webhook_per_minute
 
     async def __call__(self, scope, receive, send) -> None:
         """Проверяет лимиты перед передачей запроса в FastAPI и добавляет защитные заголовки."""
@@ -32,6 +41,11 @@ class LimitsMiddleware:
             return
         now = monotonic()
         client = scope.get("client", ("unknown",))[0]
+        webhook = scope.get("path") == "/api/v1/catalog/events" and scope["method"] == "POST"
+        if webhook:
+            client = "webhook:" + client
+        maximum = self.webhook_max_bytes if webhook else self.max_bytes
+        per_minute = self.webhook_per_minute if webhook else self.per_minute
         if len(self.requests) > 5000:
             self.requests = defaultdict(
                 deque, {k: v for k, v in self.requests.items() if v and v[-1] > now - 60}
@@ -40,9 +54,11 @@ class LimitsMiddleware:
         while bucket and bucket[0] <= now - 60:
             bucket.popleft()
         counted = not scope.get("path", "").startswith("/static/")
-        if counted and len(bucket) >= self.per_minute:
+        if counted and len(bucket) >= per_minute:
             await JSONResponse(
-                {"error": {"code": "rate_limit", "message": "Слишком много запросов"}}, 429
+                {"error": {"code": "rate_limit", "message": "Слишком много запросов"}},
+                429,
+                headers={"Retry-After": "60"},
             )(scope, receive, send)
             return
         if counted:
@@ -53,7 +69,7 @@ class LimitsMiddleware:
                 async with asyncio.timeout(self.timeout):
                     async for chunk in Request(scope, receive).stream():
                         content.extend(chunk)
-                        if len(content) > self.max_bytes:
+                        if len(content) > maximum:
                             await JSONResponse(
                                 {
                                     "error": {

@@ -62,7 +62,7 @@ def sync_defaults(settings) -> dict:
     return {
         "enabled": settings.catalog_daily_sync,
         "time_utc": settings.catalog_sync_time_utc,
-        "source_type": "local_xml",
+        "source_type": settings.catalog_source_type,
         "url": settings.onec_catalog_url,
         "method": settings.onec_catalog_http_method,
         "auth_type": settings.onec_catalog_auth_type,
@@ -70,7 +70,7 @@ def sync_defaults(settings) -> dict:
         "expected_format": settings.onec_catalog_response_format,
         "export_mode": settings.onec_catalog_export_mode,
         "timeout_seconds": settings.onec_catalog_timeout_seconds,
-        "max_bytes": settings.max_xml_bytes,
+        "max_bytes": settings.max_catalog_bytes,
         "completion_header": settings.onec_catalog_completion_header,
         "completion_value": settings.onec_catalog_completion_value,
     }

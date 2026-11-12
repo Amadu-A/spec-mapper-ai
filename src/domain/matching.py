@@ -64,6 +64,16 @@ def unit_key(text: str) -> str:
     return UNIT_ALIASES.get(value, value)
 
 
+def catalog_text(item: CatalogItem) -> str:
+    """Возвращает единственный реальный input embedding; идентификаторы и код исключены."""
+    return normalize(" ".join((item.name, item.article, item.brand, item.manufacturer))) or " "
+
+
+def specification_text(row: dict) -> str:
+    """Использует явные марку и артикул; непроверенные Note и имя файла не являются признаками."""
+    return normalize(" ".join(row.get(k, "") for k in ("Caption", "Brand", "Article"))) or " "
+
+
 def parameters(text: str) -> dict[str, set[float]]:
     """Выделяет подтверждённые числа и границы диапазонов технических параметров."""
     text = normalize(text)
@@ -95,6 +105,16 @@ def rerank(source: dict, hits: list[tuple[CatalogItem, float]]) -> list[Candidat
         title = normalize(item.name)
         actual = parameters(title)
         conflicts, evidence = [], []
+        for key, actual_values, label in (
+            ("Article", (item.article,), "артикул"),
+            ("Brand", (item.brand, item.manufacturer), "марка или производитель"),
+        ):
+            value = normalize(source.get(key, ""))
+            known = {normalize(v) for v in actual_values if normalize(v)}
+            if value and known and value not in known:
+                conflicts.append(f"Различается {label}")
+            elif value and not known:
+                evidence.append(f"Не подтверждён {label}")
         if article and item.article and article.group(1) != normalize(item.article):
             conflicts.append("Различается артикул")
         elif article and not item.article:

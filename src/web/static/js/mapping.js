@@ -2,6 +2,7 @@
 /** Ожидание durable задания, таблица, фильтры и пагинация без клиентского алгоритма подбора. */
 import { api, writeOptions } from "./api.js";
 import { element } from "./dom.js";
+import { sourceAttributes } from "./source-fields.js";
 import { createSelection } from "./selection.js";
 import { canApprove, clearSelectionRequest, debounce, labels, newIdempotencyKey, pageInfo, stages, terminal, validUuid } from "./state.js";
 
@@ -48,6 +49,7 @@ export function createMapping(notify) {
     document.querySelector("[data-search-results]").replaceChildren();
     document.querySelector("[data-source-caption]").textContent = "";
     document.querySelector("[data-source-meta]").textContent = "";
+    document.querySelector("[data-source-file]").textContent = "";
     notify("Срок хранения задания истёк", true);
   }
   function setMutationBusy(busy) {
@@ -79,6 +81,7 @@ export function createMapping(notify) {
     /** Создаёт семантическую строку с независимыми исходными и 1С-полями. */
     const tr = element("tr"); tr.append(element("td", "", String(row.index + 1)));
     const source = element("td"); source.append(element("div", "match-table__name", row.source.Caption), element("div", "match-table__meta", `стр. ${row.source.Pages} · ${row.source.UserComment1}`));
+    for (const value of sourceAttributes(row.source)) source.append(element("div", "match-table__attribute", value));
     tr.append(source, element("td", "match-table__name", `${row.source.Units} · ${row.source.Quantity}`));
     const target = element("td");
     const targetHead = element("div", "match-table__target");
@@ -114,6 +117,7 @@ export function createMapping(notify) {
       const data = await api(`/api/v1/mappings/${jobId}/result?${query}`);
       if (request !== resultGeneration || expectedJob !== jobId) return;
       revision = data.revision; rowsNode.replaceChildren(...data.items.map(renderRow));
+      document.querySelector("[data-source-file]").textContent = data.file_name ? `Файл: ${data.file_name}` : "";
       document.querySelector("[data-empty]").hidden = data.items.length > 0;
       document.querySelector("[data-empty]").textContent = "Нет позиций по выбранному фильтру";
       const page = pageInfo(offset, data.items.length, data.filtered_total, limit);
@@ -151,6 +155,7 @@ export function createMapping(notify) {
     /** Очищает предыдущий результат и закрепляет UUID в URL без хранения документа в localStorage. */
     generation++; resultGeneration++; clearTimeout(timer); clearTimeout(expiration); jobId = id; offset = 0;
     currentStatus = "queued"; approveButton.disabled = true;
+    document.querySelector("[data-source-file]").textContent = "";
     rowsNode.replaceChildren(); disableExports(true); filter.value = ""; status.value = "all";
     document.querySelector("[data-empty]").hidden = false;
     document.querySelector("[data-empty]").textContent = "Ожидание результата сопоставления…";

@@ -20,7 +20,7 @@ class SyncConfiguration(BaseModel):
     method: Literal["GET"] = "GET"
     auth_type: Literal["none", "bearer", "basic"] = "none"
     credential_ref: Literal["onec_catalog"] = "onec_catalog"
-    expected_format: Literal["xml"] = "xml"
+    expected_format: Literal["xml", "json"] = "json"
     export_mode: Literal["full"] = "full"
     timeout_seconds: int = Field(60, ge=1, le=300)
     max_bytes: int = Field(200000000, ge=1024, le=2000000000)

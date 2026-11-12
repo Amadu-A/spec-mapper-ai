@@ -77,6 +77,7 @@ async def check_upgrade(engine):
             )
         )
         await connection.run_sync(upgrade, "0003")
+        await connection.run_sync(upgrade, "0004")
         assert await connection.scalar(select(CatalogStateRow.active)) == version
         assert await connection.scalar(select(CatalogStateRow.syncing)) is True
         assert await connection.scalar(select(ApprovalRow.snapshot)) == snapshot

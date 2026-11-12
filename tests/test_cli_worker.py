@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.cli import prepare_secrets
+from src.config import Settings
 from src.worker import maintenance
 
 
@@ -20,7 +21,8 @@ def test_sparse_secrets_are_idempotent_and_existing_password_is_preserved(tmp_pa
     first = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "DATABASE_PASSWORD=" + password in first
     assert "APP_PORT" not in first
-    assert len([line for line in first.splitlines() if "=" in line]) == 5
+    assert len([line for line in first.splitlines() if "=" in line]) == 6
+    assert len(Settings().onec_catalog_webhook_key.get_secret_value()) >= 24
     prepare_secrets()
     assert Path(".env").read_text(encoding="utf-8") == first
 

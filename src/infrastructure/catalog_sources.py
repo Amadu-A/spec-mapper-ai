@@ -1,5 +1,5 @@
 # src/infrastructure/catalog_sources.py
-"""Источники каталога: локальный XML и контрактный полный HTTP XML с защитой SSRF."""
+"""Источники каталога: локальный XML, полный HTTP XML/JSON и JSON batch с защитой SSRF."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import httpx
 
 from src.domain.catalog_sync import validate_time
 from src.domain.models import MapperError, digest
+from src.infrastructure.json_catalog import JsonCatalogSource
 from src.infrastructure.xml_catalog import XmlCatalogSource
 
 
@@ -30,7 +31,7 @@ async def resolve_addresses(host: str, port: int) -> list[str]:
 
 
 class CatalogSourceFactory:
-    """Делегирует парсинг прежнему XmlCatalogSource, не создавая альтернативный pipeline."""
+    """Подключает XML/JSON adapters к общему pipeline, сохраняя единые HTTP safeguards."""
 
     def __init__(self, settings, client: httpx.AsyncClient, local, resolver=resolve_addresses):
         """Принимает server-only Settings, HTTP pool и заменяемый DNS для offline security tests."""
@@ -127,11 +128,11 @@ class CatalogSourceFactory:
             return config
         if (
             config.get("method") != "GET"
-            or config.get("expected_format") != "xml"
+            or config.get("expected_format") not in {"xml", "json"}
             or config.get("export_mode") != "full"
         ):
             raise MapperError(
-                "onec_contract_unsupported", "Сейчас поддерживается только GET полного XML", 422
+                "onec_contract_unsupported", "Поддерживается GET полного XML или JSON", 422
             )
         if (
             config.get("auth_type") not in {"none", "bearer", "basic"}
@@ -144,9 +145,9 @@ class CatalogSourceFactory:
             )
         if (
             not 1 <= config.get("timeout_seconds", 0) <= 300
-            or not 1024 <= config.get("max_bytes", 0) <= self.settings.max_xml_bytes
+            or not 1024 <= config.get("max_bytes", 0) <= self.settings.max_catalog_bytes
         ):
-            raise MapperError("invalid_source_limits", "Проверьте timeout и лимит размера XML", 422)
+            raise MapperError("invalid_source_limits", "Проверьте timeout и лимит каталога", 422)
         if config.get("url"):
             self.validate_url(config["url"])
             if config["url"].startswith("http:") and config["auth_type"] != "none":
@@ -217,8 +218,26 @@ class CatalogSourceFactory:
             return self.local
         return OneCHttpCatalogSource(self, config, progress)
 
+    async def batch(self, config: dict, guids: list[str]) -> list:
+        """Получает текущие карточки только через фиксированный соседний endpoint items/batch."""
+        if config.get("expected_format") != "json" or not config.get("url", "").endswith("/export"):
+            raise MapperError(
+                "onec_batch_contract_required", "Для webhook требуется JSON URL с /export", 422
+            )
+        if not 1 <= len(guids) <= self.settings.onec_webhook_batch_size:
+            raise MapperError("onec_batch_limit", "Превышен лимит batch GUID", 422)
+
+        async def progress(stage, **details):
+            """Batch не раскрывает карточки в диагностике."""
+
+        source = OneCHttpCatalogSource(self, config, progress)
+        parsed = await source.download(guids)
+        if any(item.onec_guid not in guids for item in parsed.records):
+            raise MapperError("onec_batch_unrequested", "Batch вернул незапрошенный GUID", 503)
+        return parsed.records
+
     async def probe(self, config: dict) -> dict:
-        """Проверяет источник/полный XML, но не stage/activate PostgreSQL или Qdrant."""
+        """Проверяет полный источник без stage/activate PostgreSQL или Qdrant."""
         try:
             await self.validate(config, enabling=True)
 
@@ -260,15 +279,20 @@ class CatalogSourceFactory:
 
 
 class OneCHttpCatalogSource:
-    """Полный потоковый XML: allowlist, pinned DNS, лимиты, completion marker и прежний parser."""
+    """Ограниченный HTTP spool: allowlist, pinned DNS, streaming и проверяемая полнота."""
 
     def __init__(self, factory: CatalogSourceFactory, config: dict, progress):
         """Фиксирует открытые параметры job; секреты остаются только в server Settings."""
         self.factory, self.config, self.progress = factory, dict(config), progress
 
     async def read(self):
-        """Удаляет временный файл при любом исходе и возвращает только полностью проверенный XML."""
+        """Читает полный HTTP snapshot через общий защищённый download."""
+        return await self.download()
+
+    async def download(self, guids: list[str] | None = None):
+        """Удаляет private spool при любом исходе, возвращая только проверенные реквизиты."""
         factory, config = self.factory, self.config
+        snapshot_at = time()
         await factory.validate(config, enabling=True)
         if config.get("_source_identity", factory.identity(config)) != factory.identity(config):
             raise MapperError(
@@ -279,9 +303,16 @@ class OneCHttpCatalogSource:
         await self.progress("fetching")
         try:
             async with asyncio.timeout(config["timeout_seconds"]):
-                url, headers, extensions = await factory.pinned_url(config)
+                request_config = dict(config)
+                if guids is not None:
+                    request_config["url"] = config["url"][: -len("export")] + "items/batch"
+                url, headers, extensions = await factory.pinned_url(request_config)
                 headers["Accept-Encoding"] = "identity"
-                headers["Accept"] = "application/xml, text/xml"
+                headers["Accept"] = (
+                    "application/json"
+                    if config["expected_format"] == "json"
+                    else "application/xml, text/xml"
+                )
                 headers["Connection"] = "close"
                 auth = None
                 if config["auth_type"] == "bearer":
@@ -297,17 +328,18 @@ class OneCHttpCatalogSource:
                 await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(prefix="onec-download-", dir=root) as temporary:
                     os.chmod(temporary, 0o700)
-                    path = Path(temporary) / "catalog.xml"
+                    path = Path(temporary) / ("catalog." + config["expected_format"])
                     async with factory.client.stream(
-                        "GET",
+                        "POST" if guids is not None else "GET",
                         url,
                         headers=headers,
                         extensions=extensions,
                         auth=auth,
                         timeout=config["timeout_seconds"],
                         follow_redirects=False,
+                        **({"json": {"guids": guids}} if guids is not None else {}),
                     ) as response:
-                        self._validate_response(response)
+                        self._validate_response(response, complete=guids is None)
                         await self.progress("downloading", downloaded_bytes=0)
                         count = 0
                         bucket = 0
@@ -315,10 +347,13 @@ class OneCHttpCatalogSource:
                             os.chmod(path, 0o600)
                             async for chunk in response.aiter_bytes(65536):
                                 count += len(chunk)
-                                if count > config["max_bytes"]:
+                                if count > min(
+                                    config["max_bytes"],
+                                    5000000 if guids is not None else config["max_bytes"],
+                                ):
                                     raise MapperError(
                                         "onec_response_too_large",
-                                        "XML превышает настроенный лимит",
+                                        "Выгрузка превышает настроенный лимит",
                                         422,
                                     )
                                 await asyncio.to_thread(stream.write, chunk)
@@ -331,6 +366,24 @@ class OneCHttpCatalogSource:
                                 "onec_incomplete_response", "Получена неполная выгрузка 1С", 422
                             )
                     await self.progress("validating", downloaded_bytes=count)
+                    if config["expected_format"] == "json":
+                        parsed = await JsonCatalogSource(
+                            path,
+                            config["max_bytes"],
+                            len(guids)
+                            if guids is not None
+                            else factory.settings.onec_catalog_max_rows,
+                            factory.settings.duplicate_code_policy,
+                            full=guids is None,
+                        ).read()
+                        if guids is None:
+                            parsed.context.update(
+                                snapshot_at=snapshot_at,
+                                min_items=factory.settings.onec_catalog_min_items,
+                                max_shrink_ratio=factory.settings.onec_catalog_max_shrink_ratio,
+                                shrink_ack=factory.settings.onec_catalog_shrink_ack_sha256,
+                            )
+                        return parsed
                     return await XmlCatalogSource(
                         Path(temporary), config["max_bytes"], factory.settings.duplicate_code_policy
                     ).read()
@@ -338,10 +391,10 @@ class OneCHttpCatalogSource:
             raise
         except (httpx.HTTPError, TimeoutError, OSError, ValueError) as exc:
             raise MapperError(
-                "onec_source_unavailable", "Не удалось полностью получить XML из 1С", 503
+                "onec_source_unavailable", "Не удалось полностью получить выгрузку из 1С", 503
             ) from exc
 
-    def _validate_response(self, response: httpx.Response) -> None:
+    def _validate_response(self, response: httpx.Response, complete=True) -> None:
         """Требует согласованный completion marker, полный 200 и поддерживаемый content type."""
         if response.status_code in {401, 403}:
             raise MapperError("onec_unauthorized", "1С отклонила авторизацию источника", 422)
@@ -352,22 +405,37 @@ class OneCHttpCatalogSource:
                 503 if response.status_code >= 500 else 422,
             )
         if (
-            response.headers.get(self.config["completion_header"])
+            complete
+            and response.headers.get(self.config["completion_header"])
             != self.config["completion_value"]
             or response.headers.get("content-range")
             or response.headers.get("content-encoding", "identity") not in {"", "identity"}
         ):
             raise MapperError(
-                "onec_incomplete_response", "Не подтверждена завершённость полной XML-выгрузки", 422
+                "onec_incomplete_response", "Не подтверждена завершённость полной выгрузки", 422
             )
-        if response.headers.get("content-type", "").split(";")[0].strip().lower() not in {
-            "application/xml",
-            "text/xml",
-            "application/octet-stream",
-        }:
+        allowed_types = (
+            {"application/json"}
+            if self.config["expected_format"] == "json"
+            else {
+                "application/xml",
+                "text/xml",
+                "application/octet-stream",
+            }
+        )
+        if (
+            response.headers.get("content-type", "").split(";")[0].strip().lower()
+            not in allowed_types
+        ):
             raise MapperError(
-                "onec_invalid_content_type", "Ожидался полный XML, получен другой content type", 422
+                "onec_invalid_content_type", "Content-Type не соответствует формату каталога", 422
             )
+        if self.config["expected_format"] == "json":
+            content_type = response.headers.get("content-type", "").lower().replace(" ", "")
+            if "charset=" in content_type and content_type.split("charset=", 1)[1].split(";", 1)[
+                0
+            ].strip('"') not in {"utf-8", "utf8"}:
+                raise MapperError("onec_invalid_charset", "JSON 1С должен использовать UTF-8", 422)
         length = response.headers.get("content-length")
         if length and int(length) > self.config["max_bytes"]:
-            raise MapperError("onec_response_too_large", "XML превышает настроенный лимит", 422)
+            raise MapperError("onec_response_too_large", "Каталог превышает настроенный лимит", 422)

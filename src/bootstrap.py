@@ -11,12 +11,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.application.catalog import PruneCatalogUseCase, SynchronizeCatalogUseCase
+from src.application.catalog_events import CatalogEvents
 from src.application.catalog_management import CatalogManagement
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
 from src.config import Settings
 from src.domain.embedding import compatible_embedding
 from src.infrastructure.broker import RabbitBroker
+from src.infrastructure.catalog_events import SqlCatalogEvents
 from src.infrastructure.catalog_sources import CatalogSourceFactory
 from src.infrastructure.http_clients import HttpExtractionSource, SharedEmbeddings
 from src.infrastructure.integration_status import IntegrationProbes
@@ -47,6 +49,7 @@ class Container:
     sync: CatalogManagement
     operator_access: SqlOperatorAccess
     integration_probes: IntegrationProbes
+    catalog_events: CatalogEvents
 
     async def ready(self) -> dict:
         """Проверяет реальные зависимости; недоступный shared endpoint никогда не
@@ -66,6 +69,8 @@ class Container:
             """Проверяет выполнение реального запроса и наличие применённой схемы."""
             async with self.engine.connect() as connection:
                 await connection.execute(text("SELECT 1 FROM catalog_state LIMIT 1"))
+                await connection.execute(text("SELECT 1 FROM catalog_events LIMIT 1"))
+                await connection.execute(text("SELECT 1 FROM catalog_identities LIMIT 1"))
 
         async def embedding() -> None:
             """Сверяет реальную модель с fingerprint активного каталога."""
@@ -127,6 +132,14 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
     sources = CatalogSourceFactory(settings, http, source)
     sync_repository = SqlSyncRepository(sessions, settings, jobs)
     sync = CatalogManagement(sync_repository, sources, settings, lambda: jobs.clock())
+    catalog_events = CatalogEvents(
+        SqlCatalogEvents(sessions, settings, lambda: jobs.clock()),
+        catalog,
+        sources,
+        sync,
+        synchronizer,
+        settings,
+    )
     processor = JobProcessor(
         jobs,
         catalog,
@@ -137,6 +150,7 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         settings,
         sources,
         sync,
+        catalog_events,
     )
     return Container(
         settings,
@@ -155,4 +169,5 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         sync,
         SqlOperatorAccess(sessions, settings, lambda: jobs.clock()),
         IntegrationProbes(http, settings),
+        catalog_events,
     )

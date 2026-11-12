@@ -13,7 +13,7 @@ Web использует cookie `spec_mapper_session`; для writes нужны
 | Метод и путь | Назначение |
 |---|---|
 | `POST /api/v1/mappings` | `{ "source_job_id": "UUID" }`, обязательный `Idempotency-Key`, 202 |
-| `POST /api/v1/mappings/import-json` | Основной вход: пятиколоночный JSON, `Idempotency-Key`, необязательный UUID `X-Source-Job-ID`, 202 |
+| `POST /api/v1/mappings/import-json` | Основной вход: JSON v2 с file_name/8 полями или legacy v1, `Idempotency-Key`, необязательный UUID `X-Source-Job-ID`, 202 |
 | `GET /api/v1/mappings` | Последние 50 неистёкших заданий текущего owner |
 | `GET /api/v1/mappings/{id}` | Статус, этап, counts, processed, TTL, revision и links |
 | `GET /api/v1/mappings/{id}/result` | Страница готовых rows; до готовности 409 |
@@ -45,7 +45,7 @@ Web использует cookie `spec_mapper_session`; для writes нужны
 `manually_reviewed=true`; исходная строка и список Top-K сохраняются. Повтор запроса
 со старой revision возвращает 409, после утверждения очистка запрещена.
 
-JSON-экспорт содержит исходную пятёрку, отдельный объект `onec` и `matching`;
+JSON-экспорт содержит `file_name`, восемь исходных полей, отдельный объект `onec` и `matching`;
 оригинал доступен через `source.json`. При выборе через общий поиск cosine может
 быть null — новый выбор не получает оценку другого кандидата.
 
@@ -70,7 +70,7 @@ revision является явным подтверждением **всех т�
 по-прежнему дают 409; после approval изменения дают `result_approved` (409).
 Approval не продлевает TTL. Предварительные JSON/Excel сохраняются, финал — `approved.json`.
 Его `approval` содержит owner, время, revision и версию каталога; строки содержат
-исходную пятёрку, стабильный `index`, `onec` (либо null), признаки `matching`.
+исходные поля, стабильный `index`, `onec` (либо null), признаки `matching`.
 Полный пример и последовательность интеграции: [INTEGRATION_1C.md](INTEGRATION_1C.md).
 
 ## Дополнение V2: dashboard и управление синхронизацией
@@ -113,3 +113,34 @@ SSH-туннель. Gateway использует существующий SESSIO
 Origin или Forwarded на публичном 8087 не даёт права получить код. Получение кода
 эквивалентно CLI operator-ticket и не запускает shell/Docker из API.
 Новый маршрут не изменяет правила обычных owner cookie или API_KEYS.
+
+## Контракты V4
+
+Документ v2: только `file_name` (строка до 180 символов) и `items`.
+Каждая строка содержит все восемь строковых полей `Caption`, `Units`, `Quantity`,
+`UserComment1`, `Pages`, `Brand`, `Article`, `Note`; пустые новые поля допустимы.
+Legacy v1 содержит только `items` и исходные пять полей. Смешанные/неполные версии,
+лишние поля и числа отклоняются 422. Лимиты: прежние поля до 32000, Brand до 2000,
+Article до 4000, Note до 20000 символов. Порядок/дубли/пробелы не нормализуются.
+`source.json` возвращает точную сохранённую структуру выбранной версии.
+В `result.items[].source` и новых экспортах legacy дополняется пустыми новыми строками;
+`file_name` — метаданные верхнего уровня. Уже сохранённый `approved.json` не переписывается.
+Excel сохраняет исходные поля и имя файла как literal text, отдельно от марки/артикула 1С.
+
+| Метод и путь | Права и результат |
+| --- | --- |
+| POST `/api/v1/catalog/events` | Отдельный `X-Webhook-Key`; 202 после commit inbox, 200 на повтор |
+| GET `/api/v1/catalog/event-status` | Обычный Owner: received/pending/applied/failed, last_applied_at, состояние и URL |
+| GET `/api/v1/catalog/events` | Operator/CatalogKey: те же агрегаты и последние 50 технических доставок |
+
+Webhook body: `event_id` UUID, `occurred_at` ISO UTC, `changes` из 1–100
+уникальных `{guid: UUID, action: upsert|delete}`. GUID — настоящий GUID 1С.
+Одинаковый ID/канонический payload идемпотентен, другой payload — 409.
+Ключ отсутствует/неверен — 401, выключенный webhook — 503; IP allowlist — 403,
+schema — 422, body >32768 bytes — 413, IP rate — 429 с Retry-After,
+SQL/backlog недоступен — 503 с Retry-After. Повторять тот же event_id.
+Пользовательский 60-секундный refresh cooldown к webhook не применяется.
+
+HTTP источник поддерживает `expected_format=json|xml`; полный JSON только
+GET `{items:[...]}` с completion marker. Ответ batch — также `{items:[...]}`.
+Поля карточки и инструкция 1С: [INTEGRATION_1C](INTEGRATION_1C.md).

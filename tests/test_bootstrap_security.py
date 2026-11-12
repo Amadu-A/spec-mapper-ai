@@ -56,6 +56,10 @@ def test_secrets_atomic_failure_and_named_key_generation(tmp_path, monkeypatch):
     assert set(settings.api_keys) == {"onec", "telegram"}
     assert settings.api_key.get_secret_value() == "x" * 32
     assert not settings.extracting_api_key.get_secret_value()
+    webhook = settings.onec_catalog_webhook_key.get_secret_value()
+    assert len(webhook) >= 24 and webhook not in [
+        value.get_secret_value() for value in settings.api_keys.values()
+    ]
     prepare_project_secrets()
     assert path.read_text(encoding="utf-8") == first
 

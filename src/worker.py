@@ -25,6 +25,11 @@ async def maintenance(container) -> None:
             except Exception:
                 # Ошибка источника/настройки не останавливает доставку mapping и recovery outbox.
                 logging.getLogger(__name__).warning("catalog_schedule_retry")
+            if getattr(container, "catalog_events", None):
+                try:
+                    await container.catalog_events.tick()
+                except Exception:
+                    logging.getLogger(__name__).warning("catalog_events_retry")
             for job_id in await container.jobs.pending():
                 await container.broker.publish(job_id)
                 await container.jobs.dispatched(job_id)

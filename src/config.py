@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
     data_directory: Path = Path("data")
     duplicate_code_policy: str = "quarantine"
     catalog_daily_sync: bool = False
+    catalog_source_type: Literal["local_xml", "http_onec"] = "local_xml"
     catalog_sync_seconds: int = Field(86400, ge=60)
     catalog_sync_time_utc: str = "15:00"
     catalog_audit_retention_days: int = Field(90, ge=1, le=3650)
@@ -69,7 +71,7 @@ class Settings(BaseSettings):
     onec_catalog_username: SecretStr = SecretStr("")
     onec_catalog_password: SecretStr = SecretStr("")
     onec_catalog_token: SecretStr = SecretStr("")
-    onec_catalog_response_format: str = "xml"
+    onec_catalog_response_format: str = "json"
     onec_catalog_export_mode: str = "full"
     onec_catalog_timeout_seconds: int = Field(60, ge=1, le=300)
     onec_catalog_completion_header: str = ""
@@ -79,6 +81,19 @@ class Settings(BaseSettings):
     onec_catalog_allowed_networks: list[str] = Field(default_factory=list)
     onec_catalog_allowed_ports: list[int] = Field(default_factory=lambda: [443])
     onec_catalog_allow_http: bool = False
+    max_catalog_bytes: int = Field(200000000, ge=1024, le=500000000)
+    onec_catalog_max_rows: int = Field(200000, ge=1, le=1000000)
+    onec_catalog_min_items: int = Field(1, ge=1)
+    onec_catalog_max_shrink_ratio: float = Field(0.1, ge=0, le=0.5)
+    onec_catalog_shrink_ack_sha256: str = ""
+    onec_catalog_webhook_key: SecretStr = SecretStr("")
+    onec_webhook_batch_window_seconds: int = Field(20, ge=15, le=30)
+    onec_webhook_batch_size: int = Field(50, ge=1, le=50)
+    onec_webhook_max_events_per_batch: int = Field(100, ge=1, le=500)
+    onec_webhook_max_backlog: int = Field(10000, ge=100, le=100000)
+    onec_webhook_max_body_bytes: int = Field(32768, ge=1024, le=262144)
+    onec_webhook_rate_limit_per_minute: int = Field(120, ge=1, le=10000)
+    onec_webhook_allowed_networks: list[str] = Field(default_factory=list)
     retention_seconds: int = Field(3600, ge=60, le=86400)
     draft_ttl_seconds: int = Field(3600, ge=60, le=3600)
     catalog_import_timeout_seconds: int = Field(86400, ge=3600, le=604800)
@@ -108,6 +123,25 @@ class Settings(BaseSettings):
         """Запрещает молчаливое использование неизвестной политики дубликатов и порта upstream."""
         if self.duplicate_code_policy not in {"reject", "quarantine"}:
             raise ValueError("duplicate_code_policy: reject или quarantine")
+        if self.onec_catalog_response_format not in {"json", "xml"}:
+            raise ValueError("ONEC_CATALOG_RESPONSE_FORMAT: json или xml")
+        webhook = self.onec_catalog_webhook_key.get_secret_value()
+        if webhook and (
+            len(webhook) < 24
+            or webhook
+            in [
+                self.api_key.get_secret_value(),
+                self.catalog_admin_key.get_secret_value(),
+                self.session_secret.get_secret_value(),
+                self.extracting_api_key.get_secret_value(),
+                *[v.get_secret_value() for v in self.api_keys.values()],
+            ]
+        ):
+            raise ValueError("Webhook требует отдельный секрет от 24 символов")
+        import ipaddress
+
+        for network in [*self.onec_catalog_allowed_networks, *self.onec_webhook_allowed_networks]:
+            ipaddress.ip_network(network)
         if self.app_port == 8083:
             raise ValueError("Порт 8083 принадлежит spec-extracting-ai")
         if self.operator_port in {self.app_port, 8083}:

@@ -17,6 +17,8 @@ pytestmark = pytest.mark.e2e
 async def test_dashboard_operator_schedule_import_history_navigation(system, source):
     """Проверяет все главные действия, reload/back, ошибки доступа и мобильную вёрстку."""
     container, *_ = system
+    # Ускоренный E2E проходит много экранов за секунды; лимиты проверяются отдельно через API.
+    container.settings.rate_limit_per_minute = 1000
 
     async def ready():
         """Явно mocked здоровье внешних сервисов для браузерного offline теста."""

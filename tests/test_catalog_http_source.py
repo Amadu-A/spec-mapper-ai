@@ -35,6 +35,7 @@ def setup(settings, tmp_path, handler, addresses=None):
         completion_header="X-Test-Full",
         completion_value="yes",
         auth_type="bearer",
+        expected_format="xml",
     )
 
     async def resolve(host, port):

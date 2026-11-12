@@ -7,7 +7,13 @@ from uuid import UUID
 
 from src.application.ports import CatalogRepository, JobRepository
 from src.application.reports import export_json
-from src.domain.models import MapperError, confirm_rows, ensure_approvable, validate_source
+from src.domain.models import (
+    MapperError,
+    confirm_rows,
+    ensure_approvable,
+    source_view,
+    validate_source,
+)
 from src.observability import timed
 
 
@@ -143,7 +149,7 @@ def result_page(job: dict, query: str, status: str, offset: int, limit: int) -> 
     """Фильтрует и страницы результата, сохраняя индексы и totals всего исходного документа."""
     data = job["data"]
     rows = [
-        {"index": index, "source": source, **row}
+        {"index": index, "source": source_view(source), **row}
         for index, (source, row) in enumerate(
             zip(data["source"]["items"], data["rows"], strict=True)
         )
@@ -157,4 +163,5 @@ def result_page(job: dict, query: str, status: str, offset: int, limit: int) -> 
         "items": rows[offset : offset + limit],
         "algorithm_version": data["algorithm_version"],
         "source_hash": data["source_hash"],
+        "file_name": data["source"].get("file_name", ""),
     }

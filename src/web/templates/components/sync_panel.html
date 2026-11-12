@@ -13,10 +13,10 @@
       <label>Адрес API 1С<div class="sync-form__url"><input class="input" type="url" name="url" placeholder="Ожидается URL из контракта 1С" data-sync-url disabled><a class="icon-button" href="/settings#onec-connection" data-source-link aria-label="Открыть настройки или проверенный адрес 1С">{{ icon('external') }}</a></div></label>
     </div>
     <details class="sync-form__advanced" id="onec-connection"><summary>HTTP-контракт и серверные credentials 1С</summary><p>До утверждения контракта HTTP-синхронизация не включается. Секреты задаются оператором на сервере; здесь только ссылка на них.</p><div class="sync-form__fields">
-      <label>Метод<select class="input" name="method" disabled><option value="GET">GET полного XML</option></select></label>
+      <label>Метод<select class="input" name="method" disabled><option value="GET">GET полной выгрузки</option></select></label>
       <label>Авторизация<select class="input" name="auth_type" disabled><option value="none">Не требуется</option><option value="bearer">Bearer (на сервере)</option><option value="basic">Basic (на сервере)</option></select></label>
       <label>Credential reference<input class="input" name="credential_ref" value="onec_catalog" readonly disabled></label>
-      <label>Формат<input class="input" name="expected_format" value="xml" readonly disabled></label>
+      <label>Формат<select class="input" name="expected_format" disabled><option value="json">JSON</option><option value="xml">XML</option></select></label>
       <label>Режим<input class="input" name="export_mode" value="full" readonly disabled></label>
       <label>Timeout, секунд<input class="input" name="timeout_seconds" type="number" min="1" max="300" disabled></label>
       <label>Максимум байт<input class="input" name="max_bytes" type="number" min="1024" disabled></label>
@@ -35,3 +35,4 @@
     <article>{{ icon('calendar') }}<div><small>Следующий запуск</small><strong data-sync-next>—</strong><span>Время расписания — UTC</span></div></article>
   </div>
 </section>
+{% include "components/catalog_events.html" %}

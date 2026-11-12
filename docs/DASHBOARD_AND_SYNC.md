@@ -143,23 +143,23 @@ GUI восстанавливает прогресс из SQL; фоновый pol
 включить. HTTP probe привязан к config revision и HMAC identity credentials.
 Для включения требуется probe не старше часа. Последующие ежедневные загрузки
 разрешены для ранее подтверждённого неизменного источника и вновь проверяют весь
-XML; успех обновляет timestamp probe. При ротации credentials нужен новый probe.
+XML/JSON; успех обновляет timestamp probe. При ротации credentials нужен новый probe.
 Ручной пользовательский HTTP-запуск использует такое же подтверждение неизменного
-источника, как scheduler. Для этой доработки новая миграция не нужна: cooldown
+источника, как scheduler. Для V3 новая миграция не нужна: cooldown
 хранится в существующей `service_activity`, остальные таблицы 0001–0003 сохраняются.
 
 ## Источник HTTP: готовая архитектура, реальный контракт ожидается
 
 Локальный `data/*.xml` полностью поддерживается. HTTP адаптер использует тот же
-XmlCatalogSource/ParsedCatalog и SynchronizeCatalogUseCase. Сейчас реализован
-только GET **полного XML**. Нет заявлений о поддержке OData, SMB, delta/cursor,
+ParsedCatalog и SynchronizeCatalogUseCase. V4 добавляет GET **полного JSON**
+наряду с XML. Нет заявлений о поддержке OData, SMB, delta/cursor,
 пагинации, ZIP, 304/ETag. Без утверждённого контракта
 `ONEC_CATALOG_CONTRACT_CONFIRMED=false`: «Ожидается контракт», публикация запрещена.
 
 Открытые поля GUI: source_type, url, GET, auth_type none/basic/bearer,
-credential_ref=onec_catalog, expected_format=xml, export_mode=full, timeout_seconds,
+credential_ref=onec_catalog, expected_format=json|xml, export_mode=full, timeout_seconds,
 max_bytes, completion_header/value. Параметры заголовка завершённости берутся **из
-будущего согласованного контракта**, не являются выдуманным endpoint 1С.
+согласованного контракта**. Предложен `X-Catalog-Complete: true`, подтверждение 1С ожидается.
 Полная выгрузка должна иметь достоверный признак завершённости; корректный XML без
 такого подтверждения не даёт права удалять отсутствующие позиции.
 
@@ -180,20 +180,46 @@ GUI принимает только reference и отвечает secret_configu
 Файл скачивается потоково в собственный `catalog_staging` volume (/app/staging,
 0700/0600), не в read-only data. Проверяются таймаут, размер, Content-Length,
 HTTP 200, content-type, отсутствие partial/range/compression, completion marker,
-схема XML/XXE/дубли. Неудача удаляет только временную загрузку, сохраняет рабочий
+схема XML/XXE либо bounded JSON/типы/дубли. Неудача удаляет только временную загрузку, сохраняет рабочий
 каталог/alias. Старая незавершённая PG/Qdrant staging-версия не удаляется этим cleanup.
 
-**Блокирующие данные для live 1С:** реальный URL/метод/авторизация, доступ из
-api/worker, XML пример/XSD, GUID/deleted semantics, гарантия полного snapshot,
-признак завершённости/версия среза, максимальный размер/timeout/rate limit,
-allowlist DNS/IP/портов и CA/TLS. До этого HTTP тесты только mocked; зелёное
-подключение к реальной 1С не заявляется.
+**Для live 1С ожидаются:** completion marker, read-only сервисная учётная запись,
+безопасный транспорт и авторизованный сетевой доступ из api/worker. URL/JSON уже
+предоставлены владельцем. До подтверждения — `blocked_by_external_1c`, mock зелёным
+live не объявляется. `ONEC_CATALOG_CONTRACT_CONFIRMED=false` сохраняется.
 
-Будущие GUID 1С нельзя приравнивать внутреннему UUID, вычисленному из code.
-Перед включением нового формата: сохранить старые snapshots/approvals, отдельно
-построить проверенную таблицу соответствий code→GUID, исключить конфликтующие коды,
-проверить 1:1 на реальном экспорте, ввести версионируемую identity migration,
-протестировать ссылки старых jobs и rollback. Не переписывать selections задним числом.
+V4 добавляет registry реальный GUID → внутренний UUID. Однозначный прежний код
+сохраняет внутренний UUID, внешняя ссылка попадает только в `onec_guid`.
+Новая позиция получает внутренний UUID, равный её настоящему GUID; registry
+сохраняет его при смене кода. Исторические code conflicts не используются для
+миграции по коду. Старые jobs/approved snapshots не меняются. Embedding cache
+зависит от нормализованного input и model identity, а не от GUID/кода/active.
+
+## События 1С (V4)
+
+На главной и в настройках — реальные received/pending/applied/failed и последнее
+применение. Оператор дополнительно видит последние 50 технических доставок.
+Адрес webhook доступен для копирования, server-only ключ не отображается.
+Формат JSON/XML, расписание и источник редактирует только оператор.
+
+`catalog_events` — durable inbox и dedup, независимый от часового TTL документов.
+После SQL commit API отвечает 202 без ожидания внешних систем. Worker объединяет
+события за 20 секунд (15–30 настраивается), создаёт один catalog_events job/outbox,
+читает карточки через batch по 50 GUID, повторяет чтение до публикации. Delete
+с актуальной доступной карточкой считается устаревшим: используется текущая карточка.
+Missing upsert требует retry/full reconcile, а не удаления. Physical delete хранит tombstone.
+Применение событий и SQL active pointer фиксируются одной транзакцией после alias
+switch; неудачный commit откатывает alias, applied не выставляется. Crash после
+успешной активации повторно завершает job без повторного применения.
+
+Full sync и webhook используют общий lock. Во время full события накапливаются;
+после него batch читает текущие данные. Due daily full ожидает активный event job,
+не засчитывая его вместо полной выгрузки. Burst/backlog включает контрольную полную
+сверку; заполненный inbox даёт 503/Retry-After. Ошибки сохраняют прежний каталог,
+повторяются bounded попытками job и последующим backoff до восстановления.
+Applied event IDs хранятся постоянно для дедупликации; карточки в inbox не копируются.
+При снятии code conflict полная сверка восстанавливает ранее карантинированные
+карточки; delta не угадывает отсутствующие метаданные исключённых карточек.
 
 ## API управления и отчёты
 

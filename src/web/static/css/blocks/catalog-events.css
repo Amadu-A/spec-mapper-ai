@@ -1,0 +1,3 @@
+/* src/web/static/css/blocks/catalog-events.css */
+/* Диагностика реальных событий и длинные исходные реквизиты спецификаций. */
+.catalog-events{padding:22px;margin-top:20px}.catalog-events__source{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.catalog-events__url{display:grid;gap:8px;flex:1;min-width:0}.catalog-events__url .input{width:100%;min-width:0;box-sizing:border-box}.catalog-events__counts{display:flex;gap:32px;flex-wrap:wrap}.catalog-events__counts dd{margin:6px 0;font-size:22px;font-weight:700}.catalog-events__journal{overflow-wrap:anywhere}.catalog-events__entry{margin:10px 0;line-height:1.6}

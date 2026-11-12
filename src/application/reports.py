@@ -1,5 +1,5 @@
 # src/application/reports.py
-"""Экспорт с отдельными полями 1С и сохранением пяти исходных строк, включая Excel-формулы."""
+"""Экспорт с отдельными полями 1С и сохранением всех исходных строк, включая Excel-формулы."""
 
 from __future__ import annotations
 
@@ -10,15 +10,16 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill
 
-from src.domain.models import SOURCE_FIELDS
+from src.domain.models import SOURCE_FIELDS, source_view
 from src.observability import timed
 
 
 def export_json(job: dict) -> dict:
-    """Возвращает оригинальную пятёрку и независимые поля выбора, без подмены исходника."""
+    """Возвращает восемь исходных реквизитов и независимый выбор без изменения source."""
     data = job["data"]
     return {
         "job_id": job["id"],
+        "file_name": data["source"].get("file_name", ""),
         "source_job_id": data.get("source_job_id"),
         "source_hash": data["source_hash"],
         "catalog_version": data["catalog_version"],
@@ -28,7 +29,7 @@ def export_json(job: dict) -> dict:
         "approved_revision": data.get("approval", {}).get("approved_revision"),
         "items": [
             {
-                **source,
+                **source_view(source),
                 "index": index,
                 "onec": row["selection"],
                 "matching": {
@@ -70,6 +71,10 @@ def export_xlsx(job: dict) -> bytes:
         "Cosine-score",
         "Проверено человеком",
         "Версия каталога",
+        "file_name",
+        "Марка 1С",
+        "Артикул 1С",
+        "Производитель 1С",
     ]
     sheet.freeze_panes = "A2"
     sheet.column_dimensions["A"].width = 65
@@ -97,6 +102,10 @@ def export_xlsx(job: dict) -> bytes:
             match["score"],
             "Да" if match["confirmed"] else "Нет",
             job["data"]["catalog_version"],
+            report["file_name"],
+            item.get("brand", ""),
+            item.get("article", ""),
+            item.get("manufacturer", ""),
         ]
         cells = []
         for value in values:

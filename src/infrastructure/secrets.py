@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import tempfile
 from contextlib import contextmanager
@@ -51,6 +52,7 @@ def prepare_project_secrets() -> None:
             "rabbitmq_password",
             "session_secret",
             "catalog_admin_key",
+            "onec_catalog_webhook_key",
         ):
             if not getattr(settings, name).get_secret_value():
                 additions.append(f"{name.upper()}={secrets.token_urlsafe(36)}")
@@ -72,7 +74,14 @@ def prepare_project_secrets() -> None:
             descriptor, temporary = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=".")
             try:
                 with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                    stream.write(original.rstrip("\n") + "\n" + "\n".join(additions) + "\n")
+                    updates = dict(line.split("=", 1) for line in additions)
+                    lines = []
+                    for line in original.splitlines():
+                        match = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+                        if match and match[1].upper() in updates:
+                            continue
+                        lines.append(line)
+                    stream.write("\n".join([*lines, *additions]) + "\n")
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.chmod(temporary, 0o600)

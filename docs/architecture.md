@@ -15,7 +15,9 @@
 - `catalog_versions`, `catalog_entries` — постоянные неизменяемые снимки номенклатуры.
 - `catalog_state` — единственный активный указатель, предыдущая версия, последняя
   успешная синхронизация и код последней ошибки.
-- `catalog_vectors` — постоянный кэш векторов по hash позиции + fingerprint модели.
+- `catalog_vectors` — постоянный кэш по нормализованному embedding input + preprocessing/model identity.
+- `catalog_identities` — уникальная связь реального GUID 1С с устойчивым internal UUID и tombstone.
+- `catalog_events` — durable inbox/outbox состояния и payload hash, без дублирования карточек.
 
 Границы Unit of Work представлены атомарными repository операциями: create+outbox,
 claim, fenced checkpoint, ручной выбор+revision, stage и activate. Каждая операция
@@ -54,7 +56,7 @@ Dispatcher публикует только UUID с publisher confirm; после
 ## Согласование PostgreSQL и Qdrant
 
 1. Advisory lock сериализует импорты.
-2. XML валидируется полностью; вычисляется hash и compatibility fingerprint.
+2. XML/JSON валидируется полностью; вычисляются source hash и compatibility fingerprint.
 3. При прежней identity готовый Qdrant индекс копируется через snapshot/recover
    в новую коллекцию; upsert выполняется только для новых/изменённых позиций,
    удалённые UUID исключаются. Неизменённые точки не переиндексируются. При смене
@@ -99,7 +101,38 @@ REST запросы закреплены контрактными тестами
 API/worker используют общие только RabbitMQ и embedding; PostgreSQL/Qdrant находятся
 в private сети без host ports. Модельные веса, GPU и vLLM в приложении отсутствуют.
 Daily sync — встроенное расписание worker без отдельного orchestrator. Адаптер
-реальной 1С добавляется через `CatalogSource`; до утверждения API не имитируется.
+реальной 1С работает через `CatalogSource`; до подтверждения контракта/транспорта публикация блокируется.
+
+## JSON и события V4
+
+`JsonCatalogSource` читает bounded spool по одной карточке, проверяет UTF-8, глубину,
+число строк, дубли ключей/GUID и типы. HTTP download и SSRF/DNS pin общие с XML.
+Full snapshot требует completion marker; более 10% сокращения активных позиций
+блокируется до адресного подтверждения SHA-256. Partial batch не является full source.
+
+Registry резервирует уникальные ID под тем же catalog lock. Однозначный legacy код
+связывается с прежним UUID; новые записи используют реальный UUID как internal ID,
+но внешняя ссылка всё равно передаётся отдельным `onec_guid`. Смена кода не меняет ID.
+Code conflicts карантинятся полностью; повтор GUID отклоняет весь ответ.
+
+Векторный key = digest(reference fingerprint, catalog-normalize-v1, реальный input).
+Input — normalize(name + article + brand + manufacturer). Metadata-only изменения
+не требуют embedding/upsert существующих точек. Старый V3 cache переносится только
+при доказанном совпадении input и модели. Counts различают metadata-only/embedded/reused.
+
+Webhook принимает только GUID/action, UTC и event ID. SQL advisory management lock
+сериализует dedup/coalescing с full enqueue; один job/outbox создаётся на bounded batch.
+PostgreSQL lease/heartbeat/fence и существующая очередь RabbitMQ используются повторно.
+`EventBatchSource` читает только изменённые GUID, строит один неизменяемый snapshot
+и отдаёт его тому же SynchronizeCatalogUseCase. Перед alias switch перечитывает batch;
+согласованная активация PG фиксирует applied событий и tombstones в том же commit.
+Уже applied batch после crash не публикуется повторно. Операционные retry/backpressure
+и ожидание bootstrap не затрагивают TTL mapping, approvals или persistent volumes.
+
+Входной source v1/v2 сохраняется дословно и участвует целиком в source_hash.
+Новые поля legacy добавляются только в derived DTO/новом экспорте. Сохранённые approvals
+отдаются неизменными. Явные Brand/Article ограничивают auto-match; Note/file_name
+в текущей версии алгоритма не являются embedding/техническими признаками.
 
 `/health/live` проверяет процесс. `/health/ready` — схему БД, реального consumer
 RabbitMQ, embedding identity, Qdrant count и готовый каталог. Браузерные индикаторы

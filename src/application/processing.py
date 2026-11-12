@@ -14,7 +14,7 @@ from src.application.ports import (
     VectorIndex,
 )
 from src.domain.embedding import compatible_embedding
-from src.domain.matching import choose, normalize, rerank
+from src.domain.matching import choose, rerank, specification_text
 from src.domain.models import ALGORITHM_VERSION, MapperError, digest
 from src.observability import timed
 
@@ -33,11 +33,13 @@ class JobProcessor:
         settings,
         catalog_sources=None,
         catalog_management=None,
+        catalog_events=None,
     ) -> None:
         """Принимает все порты через composition root без создания клиентов в use-case."""
         self.jobs, self.catalog, self.extraction = jobs, catalog, extraction
         self.catalog_sources = catalog_sources
         self.catalog_management = catalog_management
+        self.catalog_events = catalog_events
         self.embeddings, self.index, self.synchronizer, self.settings = (
             embeddings,
             index,
@@ -74,6 +76,15 @@ class JobProcessor:
             """Выбирает только вид durable операции и сохраняет terminal checkpoint."""
             if job["attempts"] > self.settings.max_attempts:
                 await checkpoint(state="failed", stage="failed", error_code="attempts_exhausted")
+                return
+            if job["kind"] == "catalog_events":
+                status = await self.catalog_events.execute(job, progress)
+                await checkpoint(
+                    state="complete",
+                    stage="complete",
+                    data={**job["data"], "catalog_status": status},
+                    error_code=None,
+                )
                 return
             if job["kind"] == "catalog":
                 config = job["data"].get("catalog_sync", {})
@@ -116,7 +127,10 @@ class JobProcessor:
         try:
             await running
         except MapperError as exc:
-            retry = exc.status >= 500 and job["attempts"] < self.settings.max_attempts
+            busy = exc.code == "catalog_busy"
+            if job["kind"] == "catalog_events" and self.catalog_events and not busy:
+                await self.catalog_events.repository.failure(job, exc.code)
+            retry = busy or (exc.status >= 500 and job["attempts"] < self.settings.max_attempts)
             if retry:
                 await asyncio.sleep(min(2 ** job["attempts"], 10))
             await self.jobs.checkpoint(
@@ -125,11 +139,14 @@ class JobProcessor:
                 state="queued" if retry else "failed",
                 stage="retry" if retry else "failed",
                 error_code=exc.code,
+                **({"attempts": max(0, job["attempts"] - 1)} if busy else {}),
             )
             logging.getLogger(__name__).warning(
                 "job_error", extra={"job_id": job_id, "error_code": exc.code}
             )
         except Exception:
+            if job["kind"] == "catalog_events" and self.catalog_events:
+                await self.catalog_events.repository.failure(job, "internal_error")
             await self.jobs.checkpoint(
                 job_id, token, state="failed", stage="failed", error_code="internal_error"
             )
@@ -171,9 +188,7 @@ class JobProcessor:
         items, batch_size = data["source"]["items"], self.settings.embedding_batch_size
         for start in range(len(data["rows"]), len(items), batch_size):
             batch = items[start : start + batch_size]
-            vectors = await self.embeddings.embed(
-                [normalize(row["Caption"]) or " " for row in batch]
-            )
+            vectors = await self.embeddings.embed([specification_text(row) for row in batch])
             hits = await self.index.search(data["collection"], vectors, self.settings.top_k)
             ids = [guid for row in hits for guid, _ in row]
             metadata = await self.catalog.items(data["catalog_version"], ids)

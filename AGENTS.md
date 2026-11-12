@@ -13,7 +13,7 @@
 
 1. Входной идентификатор — `spec-extracting-ai` **`job_id` (UUID)**, а не cookie-сессия другой системы. Серверный HTTP-клиент работает с API-ключом из собственного `.env`, `X-API-Key`; этот ключ не отправляется в браузер. Правило owner/ключа upstream сохраняется.
 2. Опрашивать `GET /api/v1/extractions/{job_id}`. `queued`/`running` — продолжать ограниченный polling; `completed`/`completed_with_warnings` — однократно получить `GET /api/v1/extractions/{job_id}/result.json`; `failed`, `cancelled`, 404, 410, timeout и ошибки соединения — явные диагностируемые состояния. Загрузка JSON должна завершиться ДО TTL upstream; не считать snapshot/partial или SSE `text_delta` готовым экспортом.
-3. Контракт готового документа: `{"items": [{"Caption": "...", "Units": "...", "Quantity": "...", "UserComment1": "...", "Pages": "..."}]}`. Все пять полей — строки. Сохранить исходный порядок, дубликаты и значения **дословно**, не изменять исходный JSON и не выводить новые поля в эту структуру.
+3. Поддерживать legacy v1 с `items` и пятью строками Caption/Units/Quantity/UserComment1/Pages и v2 с обязательным `file_name` и всеми восемью строковыми полями (добавлены Brand/Article/Note). Сохранить порядок, дубликаты и значения **дословно**. Не дописывать новые поля в сохранённый legacy source; defaults допустимы только в derived представлениях и новых экспортах. Старые approved snapshots неизменны.
 4. Сопоставления хранить отдельно, связав с `source_job_id`, владельцем, индексом позиции, revision/hash исходного JSON и версией справочника. Повторный submit с тем же идемпотентным ключом не создаёт копий; изменённый payload под тем же ключом даёт конфликт.
 5. Основной интеграционный поток — готовый JSON от 1С/бота через `/mappings/import-json`, `X-API-Key`, `Idempotency-Key` и необязательный `X-Source-Job-ID`. Polling по UUID остаётся самостоятельным поддерживаемым сценарием. Это уточнение владельца из ТЗ завершения проекта.
 
@@ -122,3 +122,27 @@ snapshot фиксируются атомарно, source/TTL не меняютс
 вместо null. Крестик удаляет только selection через DELETE с owner/CSRF/revision,
 не исходную строку/кандидатов; после approved изменения запрещены. SVG favicon
 продолжает существующий логотип. Offline/mocked и live результаты разделять.
+
+## 11. JSON 1С, webhook и миграция GUID (V4)
+
+HTTP JSON GET/export и POST/items/batch используют общий защищённый transport и
+ParsedCatalog pipeline наряду с XML. Полный JSON требует completion marker,
+строгих типов, bounded streaming и shrink guard. Реальный адрес из ТЗ не означает
+авторизованный production транспорт: HTTP Basic и пустой пароль не разрешены.
+ONEC_CATALOG_CONTRACT_CONFIRMED остаётся false до реального подтверждения.
+
+Webhook POST /api/v1/catalog/events имеет отдельный server-only ключ,
+durable PG inbox/dedup и существующий Rabbit job outbox/lease/fence. 202 только
+после commit, changed payload того же event_id — 409. Batch coalesces за 20 секунд;
+full sync и события используют общий lock/staging/alias. Applied и active SQL pointer
+фиксируются одним commit. Missing upsert не считается delete. Physical delete
+сохраняет tombstone; full сверка остаётся источником истины. Не клонировать индекс
+отдельно на каждый GUID. Порты 8087/8088, owner/TTL/approved и shared stack сохраняются.
+
+Реальный GUID хранится отдельно в onec_guid и уникальном registry. Однозначный
+legacy code сохраняет internal UUID; новые карточки используют стабильный реальный
+UUID как internal ID. Смена кода не создаёт новую карточку. Semantic fingerprint
+зависит от model/preprocessing identity и реального input, не от GUID/кода/active.
+Переиспользовать V3 cache только при совпавшем input. Explicit Brand/Article учитываются
+в подборе/конфликтах; Note и file_name сейчас не являются embedding признаками.
+Миграция 0004 additive; старые approvals и staging не сбрасывать.

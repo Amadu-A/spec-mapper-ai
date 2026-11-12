@@ -69,7 +69,10 @@ async def import_json(
 ) -> dict:
     """Принимает окончательный JSON через ту же прикладную очередь, что и API polling."""
     job = await request.app.state.container.mappings.import_document(
-        current, key, body.model_dump(), str(source_job_id) if source_job_id else None
+        current,
+        key,
+        body.model_dump(exclude_unset=True),
+        str(source_job_id) if source_job_id else None,
     )
     return public_status(job)
 
@@ -156,7 +159,7 @@ async def clear_selection(
 
 @router.get("/mappings/{job_id}/source.json", response_model=SourceDocument)
 async def original(request: Request, job_id: UUID, current: Owner) -> Response:
-    """Отдаёт только исходный пятиколоночный документ без добавленных полей сопоставления."""
+    """Отдаёт сохранённый source v1/v2 дословно, без добавленных полей сопоставления."""
     job = await request.app.state.container.mappings.result(current, str(job_id))
     return JSONResponse(
         job["data"]["source"], headers={"Content-Disposition": 'attachment; filename="source.json"'}

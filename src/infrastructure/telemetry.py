@@ -25,6 +25,7 @@ REPORT_FIELDS = {
     "removed_count",
     "added_count",
     "changed_count",
+    "metadata_only_count",
     "unchanged_count",
     "run_statistics",
     "error_code",

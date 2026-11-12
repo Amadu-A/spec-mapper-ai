@@ -3,6 +3,7 @@
 import { api } from "./api.js";
 import { element, option } from "./dom.js";
 import { debounce, selectionPayload } from "./state.js";
+import { sourceAttributes } from "./source-fields.js";
 
 export function createSelection(onSaved) {
   /** Инициализирует native dialog и возвращает операцию открытия для строки таблицы. */
@@ -71,6 +72,7 @@ export function createSelection(onSaved) {
     query.value = ""; results.replaceChildren();
     dialog.querySelector("[data-source-caption]").textContent = row.source.Caption;
     dialog.querySelector("[data-source-meta]").textContent = `${row.source.Units} · ${row.source.Quantity} · стр. ${row.source.Pages} · ${row.source.UserComment1}`;
+    dialog.querySelector("[data-source-meta]").textContent += sourceAttributes(row.source).map(value => `\n${value}`).join("");
     dialog.querySelector("[data-save-status]").textContent = "Выберите позицию для подтверждения";
     const list = dialog.querySelector("[data-candidates]");
     list.replaceChildren(...row.candidates.map(candidate => option(candidate.item, candidate, undefined, choose)));

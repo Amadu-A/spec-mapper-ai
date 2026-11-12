@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from src.application.ports import CatalogRepository, CatalogSource, Embeddings, VectorIndex
 from src.domain.embedding import compatible_embedding
-from src.domain.matching import normalize
+from src.domain.matching import catalog_text
 from src.domain.models import MapperError, digest
 from src.observability import timed
 
@@ -37,6 +37,21 @@ class SynchronizeCatalogUseCase:
                 if not source_override:
                     await progress("validating")
                 source = await (source_override or self.source).read()
+                previous = await self.catalog.status()
+                if source.context.get("full_json"):
+                    minimum = source.context.get("min_items", 1)
+                    shrink = source.context.get("max_shrink_ratio", 0.1)
+                    if len(source.items) < minimum or (
+                        previous.get("ready")
+                        and len(source.items) < previous["count"] * (1 - shrink)
+                        and source.context.get("shrink_ack") != source.source_hash
+                    ):
+                        raise MapperError(
+                            "catalog_shrink_guard",
+                            "Подозрительно малый JSON: проверьте выгрузку и подтвердите SHA-256",
+                            422,
+                        )
+                await self.catalog.reconcile(source)
                 await progress(
                     "validated",
                     total=len(source.items),
@@ -45,7 +60,6 @@ class SynchronizeCatalogUseCase:
                     statistics=source.statistics,
                 )
                 identity = await self.embeddings.identity()
-                previous = await self.catalog.status()
                 usable = (
                     previous.get("ready")
                     and await self.index.exists(previous["collection"])
@@ -63,13 +77,30 @@ class SynchronizeCatalogUseCase:
                         if key not in {"ready", "version", "last_successful_sync", "last_error"}
                     }
                     await self.catalog.update_stage(previous["version"], metadata)
-                if compatible and previous.get("source_hash") == source.source_hash:
+                if (
+                    compatible
+                    and previous.get("source_hash") == source.source_hash
+                    and not source.context.get("event_context")
+                ):
+                    if source.context.get("full_json"):
+                        refreshed = {
+                            key: value
+                            for key, value in previous.items()
+                            if key not in {"ready", "version", "last_successful_sync", "last_error"}
+                        }
+                        refreshed.update(
+                            _full_json=True,
+                            _snapshot_at=source.context.get("snapshot_at", time()),
+                            _present_guids=[item.onec_guid for item in source.records],
+                        )
+                        await self.catalog.update_stage(previous["version"], refreshed)
                     await self.catalog.activate(previous["version"])
                     return {
                         **await self.catalog.status(),
                         "run_statistics": {
                             "added_count": 0,
                             "changed_count": 0,
+                            "metadata_only_count": 0,
                             "removed_count": 0,
                             "unchanged_count": len(source.items),
                             "embedded_count": 0,
@@ -113,6 +144,7 @@ class SynchronizeCatalogUseCase:
                         "removed_count": 0,
                         "added_count": 0,
                         "changed_count": 0,
+                        "metadata_only_count": 0,
                         "unchanged_count": 0,
                         "counts_complete": True,
                         "updated_at": time(),
@@ -125,6 +157,16 @@ class SynchronizeCatalogUseCase:
                         statistics=source.statistics,
                     )
                     await self.catalog.stage(version, source.items, metadata)
+                if source.records:
+                    metadata["_present_guids"] = [
+                        item.onec_guid for item in source.records if item.onec_guid
+                    ]
+                if source.context.get("full_json"):
+                    metadata["_full_json"] = True
+                    metadata["_snapshot_at"] = source.context.get("snapshot_at", time())
+                if source.context.get("event_context"):
+                    metadata["_event_context"] = source.context["event_context"]
+                await self.catalog.update_stage(version, metadata)
                 await progress(
                     "preparing_index",
                     catalog_version=version,
@@ -156,6 +198,8 @@ class SynchronizeCatalogUseCase:
                     processed=len(source.items),
                     total=len(source.items),
                 )
+                if verify := getattr(source_override, "before_publish", None):
+                    await verify()
                 async with self.catalog.guard():
                     old_collection = await self.index.switch(metadata["collection"])
                     try:
@@ -170,6 +214,7 @@ class SynchronizeCatalogUseCase:
                         for key in (
                             "added_count",
                             "changed_count",
+                            "metadata_only_count",
                             "removed_count",
                             "unchanged_count",
                             "embedded_count",
@@ -206,8 +251,9 @@ class SynchronizeCatalogUseCase:
         """Фиксирует offset после durable upsert; повтор незавершённой пачки идемпотентен."""
         for start in range(metadata["resume_offset"], len(items), self.batch_size):
             batch = items[start : start + self.batch_size]
-            for name in ("added_count", "changed_count", "unchanged_count"):
+            for name in ("added_count", "changed_count", "unchanged_count", "metadata_only_count"):
                 metadata.setdefault(name, 0)
+            old = {}
             if metadata.get("comparison_version"):
                 old = await self.catalog.items(
                     metadata["comparison_version"], [item.guid for item in batch]
@@ -221,27 +267,63 @@ class SynchronizeCatalogUseCase:
                     item.guid in old and old[item.guid].content_hash == item.content_hash
                     for item in batch
                 )
+                metadata["metadata_only_count"] += sum(
+                    item.guid in old
+                    and old[item.guid].content_hash != item.content_hash
+                    and catalog_text(old[item.guid]) == catalog_text(item)
+                    for item in batch
+                )
+                # V3 использовал hash всей карточки. Перенос кэша разрешён только при том же input.
+                migration_keys = {
+                    digest([metadata["fingerprint"], old[item.guid].legacy_content_hash]): digest(
+                        [metadata["fingerprint"], "catalog-normalize-v1", catalog_text(item)]
+                    )
+                    for item in batch
+                    if item.guid in old and catalog_text(old[item.guid]) == catalog_text(item)
+                }
+                migrated = await self.catalog.vectors(list(migration_keys))
+                if migrated:
+                    targets = {migration_keys[key]: vector for key, vector in migrated.items()}
+                    known = await self.catalog.vectors(list(targets))
+                    await self.catalog.cache_vectors(
+                        {key: value for key, value in targets.items() if key not in known}
+                    )
                 if metadata["mode"] == "incremental":
                     batch = [
                         item
                         for item in batch
-                        if item.guid not in old or old[item.guid].content_hash != item.content_hash
+                        if item.guid not in old
+                        or catalog_text(old[item.guid]) != catalog_text(item)
                     ]
             else:
                 metadata["added_count"] += len(batch)
             if batch:
-                keys = [digest([metadata["fingerprint"], item.content_hash]) for item in batch]
-                vectors = await self.catalog.vectors(keys)
-                missing = [
-                    (key, item) for key, item in zip(keys, batch, strict=True) if key not in vectors
+                keys = [
+                    digest([metadata["fingerprint"], "catalog-normalize-v1", catalog_text(item)])
+                    for item in batch
                 ]
+                vectors = await self.catalog.vectors(keys)
+                legacy_keys = {}
+                for key, item in zip(keys, batch, strict=True):
+                    prior = old.get(item.guid, item)
+                    if key not in vectors and catalog_text(prior) == catalog_text(item):
+                        legacy_keys[
+                            digest([metadata["fingerprint"], prior.legacy_content_hash])
+                        ] = key
+                legacy = await self.catalog.vectors(list(legacy_keys))
+                promoted = {legacy_keys[key]: value for key, value in legacy.items()}
+                if promoted:
+                    await self.catalog.cache_vectors(promoted)
+                    vectors.update(promoted)
+                missing = list(
+                    {
+                        key: item
+                        for key, item in zip(keys, batch, strict=True)
+                        if key not in vectors
+                    }.items()
+                )
                 if missing:
-                    texts = [
-                        normalize(
-                            " ".join((item.name, item.article, item.brand, item.manufacturer))
-                        )
-                        for _, item in missing
-                    ]
+                    texts = [catalog_text(item) for _, item in missing]
                     embedded = await self.embeddings.embed(texts)
                     if any(len(vector) != metadata["dimension"] for vector in embedded):
                         raise MapperError(

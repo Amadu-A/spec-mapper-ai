@@ -158,7 +158,7 @@ class SqlSyncRepository:
         return await session.scalar(
             select(JobRow)
             .where(
-                JobRow.kind == "catalog",
+                JobRow.kind.in_(["catalog", "catalog_events"]),
                 JobRow.expires_at > self.jobs.clock(),
                 JobRow.state.not_in(TERMINAL),
             )
@@ -310,6 +310,9 @@ class SqlSyncRepository:
             now = self.jobs.clock()
             if not row.config["enabled"] or row.next_run_at is None or row.next_run_at > now:
                 return None
+            active = await self._active(session)
+            if active and active.kind == "catalog_events":
+                return None  # Полный UTC слот остаётся due и выполнится после webhook batch.
             slot = due_occurrence(now, row.config["time_utc"])
             key = utc_day(slot) + ":" + source_identity
             row.next_run_at = next_occurrence(now, row.config["time_utc"])

@@ -18,7 +18,7 @@
 
 Проектные решения: [ТЗ](TECHNICAL_SPECIFICATION.md), [архитектура](architecture.md),
 [API](API.md), [эксплуатация](operations.md). Все новые docstrings и документация — по-русски.
-Исходная пятёрка JSON неизменна. Owner и TTL проверяются до выдачи результата.
+Исходный JSON v1/v2 неизменен. Owner и TTL проверяются до выдачи результата.
 
 Согласовано владельцем 05.11.2026: при конфликтующих кодах исключать **все** такие
 записи и показывать warning. В текущем XML GUID отсутствует; внутренний UUID по коду
@@ -45,3 +45,10 @@ local XML. Общий SQL cooldown 60 секунд, идемпотентный r
 сохранён без нового cooldown для bootstrap. Bulk approve подтверждает все текущие
 выборы/null без нового автоподбора; DELETE selection очищает только соответствие,
 сохраняя source, Top-K, owner/revision/TTL и immutable approved.json. В UI — SVG favicon.
+
+V4: полный JSON 1С, durable webhook и registry GUID описаны в
+[ТЗ V4](TECHNICAL_SPECIFICATION_V4.md), [интеграции](INTEGRATION_1C.md) и
+[анализе пробелов](V4_GAP_ANALYSIS.md). Прежний XML и существующие механизмы
+сохраняются. Source v1/v2 хранится дословно; новые derived поля не меняют legacy
+approvals. События используют общий pipeline; real 1C до подтверждения безопасности
+и completion marker — `blocked_by_external_1c`.

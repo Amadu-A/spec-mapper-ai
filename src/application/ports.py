@@ -73,6 +73,10 @@ class CatalogRepository(Protocol):
         """Исключает параллельную публикацию каталога на уровне PostgreSQL."""
         ...
 
+    async def reconcile(self, source: ParsedCatalog) -> None:
+        """Сохраняет стабильные внутренние UUID при появлении внешних GUID 1С."""
+        ...
+
     def guard(self) -> AbstractAsyncContextManager:
         """Защищает pin, публикацию и сборку версий, не блокируя поиск во время embedding."""
         ...

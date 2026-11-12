@@ -167,3 +167,36 @@ class CatalogAuditRow(Base):
     actor: Mapped[str] = mapped_column(String(80))
     event: Mapped[str] = mapped_column(String(80))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CatalogIdentityRow(Base):
+    """Постоянная уникальная привязка настоящего GUID к внутреннему UUID, включая tombstones."""
+
+    __tablename__ = "catalog_identities"
+    onec_guid: Mapped[str] = mapped_column(String(36), primary_key=True)
+    internal_guid: Mapped[str] = mapped_column(String(36), unique=True)
+    code: Mapped[str] = mapped_column(String(128), index=True)
+    tombstone_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CatalogEventRow(Base):
+    """Durable inbox и dedup: технические GUID/action без карточек каталога или секретов."""
+
+    __tablename__ = "catalog_events"
+    __table_args__ = (
+        UniqueConstraint("source", "event_id"),
+        Index("ix_catalog_events_pending", "state", "received_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), default="onec_catalog")
+    event_id: Mapped[str] = mapped_column(String(36))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[float] = mapped_column(Float)
+    received_at: Mapped[float] = mapped_column(Float)
+    changes: Mapped[list] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(24), default="pending")
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    applied_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    catalog_version: Mapped[str | None] = mapped_column(String(36), nullable=True)

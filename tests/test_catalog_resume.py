@@ -89,3 +89,37 @@ async def test_catalog_has_own_deadline_and_staging_resumes(system, source, monk
     assert len(container.index.collections) == count_before
     assert status["count"] == 5
     assert container.embeddings.calls - calls_before == 1
+
+
+async def test_startup_uses_verified_persistent_catalog_without_local_xml(
+    system, tmp_path, monkeypatch
+):
+    """Повтор up не требует возвращать XML, когда сохранённый каталог и индекс исправны."""
+    from src import cli
+
+    container, *_ = system
+    container.settings.data_directory = tmp_path / "no-xml"
+    before = await container.catalog.status()
+    monkeypatch.setattr(cli, "build_container", lambda _: container)
+    await cli.enqueue_catalog(wait=True, configured_source=True)
+    assert (await container.catalog.status())["version"] == before["version"]
+    assert not await container.jobs.pending()
+
+
+async def test_catalog_busy_defers_without_exhausting_real_retry_budget(system, monkeypatch):
+    """Конкурирующий prune/import lock не превращается в permanent failure durable задания."""
+    container, _, sync, *_ = system
+    original = sync.execute
+
+    async def busy(*args, **kwargs):
+        """Моделирует занятый PostgreSQL catalog advisory lock."""
+        raise MapperError("catalog_busy", "Каталог занят", 409)
+
+    job = await container.jobs.create("admin", "busy-retry", {}, "catalog")
+    monkeypatch.setattr(sync, "execute", busy)
+    await container.processor.process(job["id"])
+    waiting = await container.jobs.get(job["id"])
+    assert waiting["state"] == "queued" and waiting["attempts"] == 0
+    monkeypatch.setattr(sync, "execute", original)
+    await container.processor.process(job["id"])
+    assert (await container.jobs.get(job["id"]))["state"] == "complete"

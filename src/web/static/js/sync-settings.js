@@ -15,7 +15,7 @@ export function createSync(operator,notify) {
   const showError=error=>{errorNode.textContent=error.message;errorNode.hidden=false;};
   function access() {
     const http=form.elements.source_type.value==='http_onec',unverified=http&&(!saved?.contract_confirmed||!saved?.probe_current||saved?.source_type!=='http_onec');
-    fields.forEach(n=>{n.disabled=!operator||!saved||busy||(n.name==='url'&&!http)||(n.name==='enabled'&&!n.checked&&unverified);});
+    fields.forEach(n=>{n.disabled=!operator||!saved||busy||(['url','expected_format'].includes(n.name)&&!http)||(n.name==='enabled'&&!n.checked&&unverified);});
     root.querySelector("[data-save-sync]").disabled=!operator||!saved||busy;
     root.querySelector("[data-test-source]").disabled=!operator||!saved||busy||dirty;
     const seconds=Math.max(0,Math.ceil((cooldownUntil-performance.now())/1000));
