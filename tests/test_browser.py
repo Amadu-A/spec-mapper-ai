@@ -60,7 +60,7 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
             errors = []
             page.on("pageerror", lambda error: errors.append(error.stack))
             await page.goto(f"http://127.0.0.1:{port}/mapping")
-            await expect(page.locator("[data-catalog-date]")).to_contain_text("Каталог:")
+            await expect(page.locator("[data-import]")).to_be_enabled(timeout=15000)
             import json
 
             await page.locator("[data-import]").set_input_files(

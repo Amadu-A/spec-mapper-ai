@@ -24,6 +24,7 @@ export function createMapping(notify) {
   const limit = 25, rowsNode = document.querySelector("[data-rows]");
   const filter = document.querySelector("[data-filter]"), status = document.querySelector("[data-status]");
   const form = document.querySelector("[data-submit]"), input = form.elements.source_job_id;
+  const importInput = document.querySelector("[data-import]");
   const choose = createSelection(async (saved = true) => {
     await poll();
     notify(saved ? "Выбор сохранён в базе данных" : "Таблица обновлена. Повторите свой выбор после изменения в другой вкладке.", !saved);
@@ -177,7 +178,7 @@ export function createMapping(notify) {
     catch (error) { if (expectedJob === jobId && expectedGeneration === generation) notify(error.message, true); }
     finally { setMutationBusy(false); if (expectedJob === jobId && expectedGeneration === generation) await poll(); }
   });
-  document.querySelector("[data-import]").addEventListener("change", async event => {
+  importInput.addEventListener("change", async event => {
     const file = event.target.files[0]; if (!file) return;
     try {
       if (file.size > 15000000) throw new Error("JSON превышает допустимый размер 15 МБ");
@@ -190,5 +191,8 @@ export function createMapping(notify) {
   document.querySelector("[data-previous]").addEventListener("click", () => { offset = Math.max(0, offset - limit); loadRows(); });
   document.querySelector("[data-next]").addEventListener("click", () => { offset += limit; loadRows(); });
   const source = new URLSearchParams(location.search).get("source_job_id"); if (source) input.value = source;
+  // Сессия и обработчики готовы: разрешаем ввод независимо от фоновой сводки каталога.
+  input.disabled = false; importInput.disabled = false; form.querySelector("button").disabled = false;
+  document.querySelector("[data-job-status]").textContent = "Укажите ID задания извлечения или импортируйте готовый JSON";
   return open;
 }

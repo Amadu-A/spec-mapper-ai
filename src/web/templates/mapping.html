@@ -6,13 +6,13 @@
   <div class="heading"><div><h1>Сопоставление спецификации</h1><p>Подбор номенклатуры 1С для каждой позиции с возможностью ручной корректировки</p></div><div class="heading__actions"><a class="button" data-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-export="result.json" aria-disabled="true">↓ Предварительный JSON</a><a class="button" data-export="result.xlsx" aria-disabled="true">↓ Excel</a><a class="button button--primary" data-export="approved.json" aria-disabled="true">↓ Утверждённый JSON</a></div></div>
   <section class="workspace workspace--padded"><p data-approval-status role="status">«Утвердить результат» подтвердит все текущие соответствия и пустые строки. Ошибочный выбор можно убрать крестиком.</p><button class="button button--primary" type="button" data-approve disabled>Утвердить результат</button></section>
   <section class="source" aria-labelledby="source-title">
-    <div><h2 id="source-title">Источник: spec-extracting-ai</h2><p class="source__status" data-job-status>Укажите ID задания извлечения или импортируйте готовый JSON</p><p class="source__file" data-source-file></p></div>
+    <div><h2 id="source-title">Источник: spec-extracting-ai</h2><p class="source__status" data-job-status>Подготовка защищённой сессии…</p><p class="source__file" data-source-file></p></div>
     <form class="source__form" data-submit>
       <label class="page__sr-only" for="source-id">UUID задания извлечения</label>
-      <input class="input" id="source-id" name="source_job_id" placeholder="UUID задания извлечения" required autocomplete="off">
-      <button class="button button--primary" type="submit">Сопоставить</button>
+      <input class="input" id="source-id" name="source_job_id" placeholder="UUID задания извлечения" required autocomplete="off" disabled>
+      <button class="button button--primary" type="submit" disabled>Сопоставить</button>
     </form>
-    <div class="source__import"><label class="button" for="json-file">↑ Импорт готового JSON</label><input class="page__file" id="json-file" type="file" accept="application/json,.json" data-import><span data-job-id></span></div>
+    <div class="source__import"><label class="button" for="json-file">↑ Импорт готового JSON</label><input class="page__file" id="json-file" type="file" accept="application/json,.json" data-import disabled><span data-job-id></span></div>
   </section>
   <div class="metrics" aria-label="Итоги сопоставления">
     <article class="metric"><h2>Всего позиций</h2><strong data-count="total">0</strong><span>Из исходного JSON</span></article>

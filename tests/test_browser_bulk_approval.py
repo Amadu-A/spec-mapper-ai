@@ -62,7 +62,7 @@ async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(sy
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             await page.goto(base + "/mapping")
-            await expect(page.locator("[data-catalog-date]")).to_contain_text("Каталог:")
+            await expect(page.locator("[data-import]")).to_be_enabled(timeout=15000)
             await expect(page.locator('link[rel="icon"]')).to_have_attribute(
                 "href", "/static/favicon.svg"
             )
