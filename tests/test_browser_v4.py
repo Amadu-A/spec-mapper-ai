@@ -59,14 +59,54 @@ async def test_v4_source_fields_and_operator_event_ui(onec_system, extended_sour
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
             context = await browser.new_context(viewport={"width": 1680, "height": 1100})
+            await context.tracing.start(screenshots=True, snapshots=True, sources=True)
             page = await context.new_page()
             errors = []
+            console_errors = []
             responses = []
+            pending = {}
             page.on("pageerror", lambda error: errors.append(str(error)))
+
+            def request_started(request):
+                """Запоминает метод/путь без cookie, заголовков и тела документа."""
+                pending[id(request)] = (request.method, urlsplit(request.url).path)
+
+            def request_finished(request):
+                """Убирает завершённый запрос из диагностики зависания."""
+                pending.pop(id(request), None)
+
+            def request_failed(request):
+                """Сохраняет сетевую ошибку, которую не отражает событие response."""
+                responses.append((request.failure, urlsplit(request.url).path))
+                request_finished(request)
+
+            page.on("request", request_started)
+            page.on("requestfinished", request_finished)
+            page.on("requestfailed", request_failed)
+            page.on(
+                "console",
+                lambda message: (
+                    console_errors.append(message.text) if message.type == "error" else None
+                ),
+            )
             page.on(
                 "response",
                 lambda response: responses.append((response.status, urlsplit(response.url).path)),
             )
+
+            async def diagnostics(label):
+                """Сохраняет trace/скриншот и безопасную сводку реального сбоя."""
+                folder = Path("test-results")
+                await asyncio.to_thread(folder.mkdir, exist_ok=True)
+                trace = folder / f"v4-{startup}-failure-trace.zip"
+                await context.tracing.stop(path=str(trace))
+                await page.screenshot(path=str(folder / f"v4-{startup}-failure.png"))
+                notice = await page.locator("[data-notice]").text_content()
+                return (
+                    f"{label}: {notice}; JS: {errors}; Console: {console_errors}; "
+                    f"HTTP: {responses}; "
+                    f"Pending: {list(pending.values())}; Trace: {trace}"
+                )
 
             async def hold_request(route):
                 """Удерживает настоящий запрос до проверки UI, не подменяя успешный ответ."""
@@ -82,97 +122,99 @@ async def test_v4_source_fields_and_operator_event_ui(onec_system, extended_sour
                     body=json.dumps({"error": {"message": "Подготовка сессии недоступна"}}),
                 )
 
-            if startup == "slow_summary":
-                await page.route("**/api/v1/dashboard/summary", hold_request)
-            elif startup == "slow_session":
-                await page.route("**/api/v1/operator/session", hold_request)
-            elif startup == "failed_session":
-                await page.route("**/api/v1/operator/session", reject_session)
-            await page.goto(base + "/mapping")
-            upload = page.locator("[data-import]")
-            submit = page.locator("[data-submit] button")
-            if startup == "slow_session":
-                await asyncio.wait_for(intercepted.wait(), timeout=15)
-                await expect(upload).to_be_disabled()
-                await expect(submit).to_be_disabled()
-                await expect(page.locator("#source-id")).to_be_disabled()
-                release.set()
-            elif startup == "failed_session":
-                await expect(page.locator("[data-notice]")).to_have_text(
-                    "Подготовка сессии недоступна"
-                )
-                await expect(upload).to_be_disabled()
-                await expect(submit).to_be_disabled()
-                assert not errors
-                await browser.close()
-                return
-            # Готовность формы независима от фоновой сводки и проверяется по самому input.
             try:
+                if startup == "slow_summary":
+                    await page.route("**/api/v1/dashboard/summary", hold_request)
+                elif startup == "slow_session":
+                    await page.route("**/api/v1/operator/session", hold_request)
+                elif startup == "failed_session":
+                    await page.route("**/api/v1/operator/session", reject_session)
+                await page.goto(base + "/mapping")
+                upload = page.locator("[data-import]")
+                submit = page.locator("[data-submit] button")
+                if startup == "slow_session":
+                    await asyncio.wait_for(intercepted.wait(), timeout=15)
+                    await expect(upload).to_be_disabled()
+                    await expect(submit).to_be_disabled()
+                    await expect(page.locator("#source-id")).to_be_disabled()
+                    release.set()
+                elif startup == "failed_session":
+                    await expect(page.locator("[data-notice]")).to_have_text(
+                        "Подготовка сессии недоступна"
+                    )
+                    await expect(upload).to_be_disabled()
+                    await expect(submit).to_be_disabled()
+                    assert not errors
+                    await browser.close()
+                    return
+                # Готовность формы независима от фоновой сводки и проверяется по самому input.
                 await expect(upload).to_be_enabled(timeout=15000)
-            except AssertionError as error:
-                notice = await page.locator("[data-notice]").text_content()
-                raise AssertionError(
-                    f"Форма не готова: {notice}; JS: {errors}; HTTP: {responses}"
-                ) from error
-            await expect(submit).to_be_enabled()
-            if startup == "slow_summary":
-                await asyncio.wait_for(intercepted.wait(), timeout=15)
-                await expect(page.locator("[data-catalog-date]")).to_have_text("Проверка каталога…")
-            await page.locator("[data-import]").set_input_files(
-                {
-                    "name": "extended.json",
-                    "mimeType": "application/json",
-                    "buffer": json.dumps(extended_source, ensure_ascii=False).encode(),
-                }
-            )
-            await expect(page.locator("[data-rows] tr")).to_have_count(3, timeout=15000)
-            release.set()
-            await expect(page.locator("[data-source-file]")).to_contain_text(
-                extended_source["file_name"]
-            )
-            await expect(page.locator("[data-rows]")).to_contain_text("00000006836")
-            await expect(page.locator("[data-rows]")).to_contain_text("ROSMA")
-            assert await page.locator("[data-rows] img").count() == 0
-            await page.get_by_role(
-                "button", name="Выбрать соответствие для строки 1", exact=True
-            ).click()
-            await expect(page.locator("[data-source-meta]")).to_contain_text("Примечание:")
-            await expect(page.locator("[data-source-meta]")).to_contain_text("00000006836")
-            await page.keyboard.press("Escape")
-            await page.locator("[data-filter]").fill("00000006836")
-            await expect(page.locator("[data-rows] tr")).to_have_count(2)
-            await page.locator("[data-approve]").click()
-            await expect(page.locator("[data-approval-status]")).to_contain_text(
-                "Результат утверждён"
-            )
-            await page.reload()
-            await expect(page.locator("[data-source-file]")).to_contain_text(
-                extended_source["file_name"]
-            )
-            await asyncio.to_thread(Path("test-results").mkdir, exist_ok=True)
-            await page.screenshot(path="test-results/v4-source-fields.png", full_page=True)
-            await page.goto(base + "/settings")
-            await expect(page.locator('[name="expected_format"]')).to_be_disabled()
-            await expect(page.locator("[data-event-count='received']")).to_have_text("0")
-            await expect(page.locator("[data-event-journal]")).not_to_be_visible()
-            assert "w" * 32 not in await page.content()
-            await page.goto(base + "/operator")
-            await page.locator("#operator-ticket").fill(await container.operator_access.issue())
-            await page.locator("[data-operator-login]").click()
-            await expect(page.locator("[data-operator-status]")).to_contain_text("активна")
-            await page.goto(base + "/settings")
-            await page.locator("#onec-connection summary").click()
-            await expect(page.locator('[name="expected_format"]')).to_be_enabled()
-            await expect(page.locator('[name="expected_format"]')).to_have_value("json")
-            await expect(page.locator("[data-event-journal]")).to_be_visible()
-            await expect(page.locator("[data-webhook-url]")).to_have_value(
-                container.settings.app_public_base_url + "/api/v1/catalog/events"
-            )
-            await page.screenshot(path="test-results/v4-webhook-settings.png", full_page=True)
-            await page.set_viewport_size({"width": 390, "height": 844})
-            assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-            assert not errors
-            await browser.close()
+                await expect(submit).to_be_enabled()
+                if startup == "slow_summary":
+                    await asyncio.wait_for(intercepted.wait(), timeout=15)
+                    await expect(page.locator("[data-catalog-date]")).to_have_text(
+                        "Проверка каталога…"
+                    )
+                await page.locator("[data-import]").set_input_files(
+                    {
+                        "name": "extended.json",
+                        "mimeType": "application/json",
+                        "buffer": json.dumps(extended_source, ensure_ascii=False).encode(),
+                    }
+                )
+                await expect(page.locator("[data-rows] tr")).to_have_count(3, timeout=15000)
+                release.set()
+                await expect(page.locator("[data-source-file]")).to_contain_text(
+                    extended_source["file_name"]
+                )
+                await expect(page.locator("[data-rows]")).to_contain_text("00000006836")
+                await expect(page.locator("[data-rows]")).to_contain_text("ROSMA")
+                assert await page.locator("[data-rows] img").count() == 0
+                await page.get_by_role(
+                    "button", name="Выбрать соответствие для строки 1", exact=True
+                ).click()
+                await expect(page.locator("[data-source-meta]")).to_contain_text("Примечание:")
+                await expect(page.locator("[data-source-meta]")).to_contain_text("00000006836")
+                await page.keyboard.press("Escape")
+                await page.locator("[data-filter]").fill("00000006836")
+                await expect(page.locator("[data-rows] tr")).to_have_count(2)
+                await page.locator("[data-approve]").click()
+                await expect(page.locator("[data-approval-status]")).to_contain_text(
+                    "Результат утверждён"
+                )
+                await page.reload()
+                await expect(page.locator("[data-source-file]")).to_contain_text(
+                    extended_source["file_name"]
+                )
+                await asyncio.to_thread(Path("test-results").mkdir, exist_ok=True)
+                await page.screenshot(path="test-results/v4-source-fields.png", full_page=True)
+                await page.goto(base + "/settings")
+                await expect(page.locator('[name="expected_format"]')).to_be_disabled()
+                await expect(page.locator("[data-event-count='received']")).to_have_text("0")
+                await expect(page.locator("[data-event-journal]")).not_to_be_visible()
+                assert "w" * 32 not in await page.content()
+                await page.goto(base + "/operator")
+                await page.locator("#operator-ticket").fill(await container.operator_access.issue())
+                await page.locator("[data-operator-login]").click()
+                await expect(page.locator("[data-operator-status]")).to_contain_text("активна")
+                await page.goto(base + "/settings")
+                await page.locator("#onec-connection summary").click()
+                await expect(page.locator('[name="expected_format"]')).to_be_enabled()
+                await expect(page.locator('[name="expected_format"]')).to_have_value("json")
+                await expect(page.locator("[data-event-journal]")).to_be_visible()
+                await expect(page.locator("[data-webhook-url]")).to_have_value(
+                    container.settings.app_public_base_url + "/api/v1/catalog/events"
+                )
+                await page.screenshot(path="test-results/v4-webhook-settings.png", full_page=True)
+                await page.set_viewport_size({"width": 390, "height": 844})
+                assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                assert not errors
+                await context.tracing.stop()
+                await browser.close()
+            except Exception as error:
+                if page.is_closed():
+                    raise
+                raise AssertionError(await diagnostics("Сценарий не завершён")) from error
     finally:
         release.set()
         server.should_exit = True

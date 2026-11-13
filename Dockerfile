@@ -16,9 +16,20 @@ USER mapper
 EXPOSE 8000
 CMD ["/app/.venv/bin/uvicorn", "src.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-proxy-headers"]
 
-FROM runtime AS test
-USER root
+# Зависимости браузера кэшируются отдельно от исходников; runtime выше не меняется.
+FROM python:3.12-slim AS test-dependencies
+COPY --from=uv /uv /usr/local/bin/uv
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_COMPILE_BYTECODE=1
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
 RUN uv sync --locked
+RUN /app/.venv/bin/playwright install --with-deps chromium
+
+FROM test-dependencies AS test
+COPY --from=runtime /app/src ./src
+COPY --from=runtime /app/docs ./docs
+COPY --from=runtime /app/alembic ./alembic
+COPY --from=runtime /app/alembic.ini /app/.env.example ./
 COPY tests ./tests
 COPY docker-compose.yml ./
-CMD ["/app/.venv/bin/pytest", "-m", "not live and not e2e", "-q"]
+CMD ["/app/.venv/bin/pytest", "-m", "not live", "-q"]
