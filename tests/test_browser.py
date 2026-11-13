@@ -85,11 +85,9 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
             screenshot = Path("test-results/browser-mapping.png")
             screenshot.parent.mkdir(exist_ok=True)
             await page.screenshot(path=str(screenshot), full_page=True)
-            async with page.expect_download() as downloaded:
-                await page.locator("[data-export='result.xlsx']").click()
-            download = await downloaded.value
-            assert download.suggested_filename == "mapping.xlsx"
-            await download.save_as(tmp_path / "mapping.xlsx")
+            await expect(page.locator("[data-export='result.xlsx']")).to_have_attribute(
+                "aria-disabled", "true"
+            )
             await page.get_by_role(
                 "button", name="Выбрать соответствие для строки 1", exact=True
             ).click()
@@ -144,6 +142,11 @@ async def test_browser_import_select_reload_and_export(system, source, tmp_path)
                 "Результат утверждён"
             )
             await expect(first_button).to_be_disabled()
+            async with page.expect_download() as downloaded:
+                await page.locator("[data-export='result.xlsx']").click()
+            download = await downloaded.value
+            assert download.suggested_filename == "mapping.xlsx"
+            await download.save_as(tmp_path / "mapping.xlsx")
             await page.reload()
             await expect(page.locator("[data-approval-status]")).to_contain_text(
                 "Результат утверждён"

@@ -22,7 +22,7 @@ Web использует cookie `spec_mapper_session`; для writes нужны
 | `DELETE /api/v1/mappings/{id}/rows/{index}/selection?revision=1` | Удалить только соответствие, сохранить исходную строку и подтверждённый `null` |
 | `GET /api/v1/mappings/{id}/source.json` | Оригинальный документ без добавленных полей |
 | `GET /api/v1/mappings/{id}/result.json` | Полный результат со всеми строками |
-| `GET /api/v1/mappings/{id}/result.xlsx` | Полный Excel, исходные значения — literal text |
+| `GET /api/v1/mappings/{id}/result.xlsx` | Excel из утверждённого snapshot, шаблон Extracting A:S + T:Y; до approval 409 not_approved |
 | `POST /api/v1/mappings/{id}/approve` | `{ "revision": 3 }`, `Idempotency-Key`; immutable snapshot, 200 |
 | `GET /api/v1/mappings/{id}/approved.json` | Только утверждённый снимок для 1С; до approval 409 |
 | `GET /api/v1/catalog/status` | count, version, fingerprint, warnings, last_successful_sync |
@@ -68,7 +68,8 @@ revision является явным подтверждением **всех т�
 сохранённые автоматические и подтверждённые человеком спорные соответствия.
 Повтор утверждённой revision идемпотентен. Старая revision и незавершённый подбор
 по-прежнему дают 409; после approval изменения дают `result_approved` (409).
-Approval не продлевает TTL. Предварительные JSON/Excel сохраняются, финал — `approved.json`.
+Approval не продлевает TTL. Предварительный JSON сохраняется; `approved.json` и Excel
+доступны только после утверждения и используют один сохранённый immutable snapshot.
 Его `approval` содержит owner, время, revision и версию каталога; строки содержат
 исходные поля, стабильный `index`, `onec` (либо null), признаки `matching`.
 Полный пример и последовательность интеграции: [INTEGRATION_1C.md](INTEGRATION_1C.md).
@@ -125,7 +126,35 @@ Article до 4000, Note до 20000 символов. Порядок/дубли/�
 `source.json` возвращает точную сохранённую структуру выбранной версии.
 В `result.items[].source` и новых экспортах legacy дополняется пустыми новыми строками;
 `file_name` — метаданные верхнего уровня. Уже сохранённый `approved.json` не переписывается.
-Excel сохраняет исходные поля и имя файла как literal text, отдельно от марки/артикула 1С.
+Excel сохраняет исходные поля и имя файла как literal text по шаблону Extracting.
+
+## Excel утверждённой спецификации
+
+Единственный маршрут Excel сопоставления — `GET /api/v1/mappings/{job_id}/result.xlsx`.
+Имя скачивания остаётся `mapping.xlsx`, лист — `Лист_1`.
+До утверждения, включая queued и готовое ревью, ответ — 409 `not_approved`.
+Чужое/отсутствующее задание — 404, истёкшее до физической очистки — 410.
+Повторного поиска, векторизации и чтения текущих соответствий при скачивании нет.
+
+A:S совпадают с шаблоном/экспортом Extracting: Caption/Units/Quantity — C/D/E,
+Brand/Article — M/N, file_name — P («Источник/Наименование файла»),
+UserComment1/Pages/Note — Q/R/S. Цены и суммы остаются пустыми, валюта G — `RUB`.
+Дубли, пустые поля, порядок и число исходных строк сохраняются.
+
+| Столбец | Заголовок | Источник в утверждённом JSON |
+| --- | --- | --- |
+| T | Наименование 1С | onec.name |
+| U | Код номенклатуры 1С | onec.code |
+| V | GUID номенклатуры 1С | onec.onec_guid, без fallback на internal guid |
+| W | Единица измерения 1С | onec.unit |
+| X | Статус сопоставления | matching.status |
+| Y | Индекс позиции Mapper | index, исходный индекс с нуля |
+
+При `onec=null` T:W пусты, строка сохраняется. Коды, артикулы и GUID — текст;
+пользовательские строки не становятся формулами или Excel-ошибками. Старые approval
+без file_name/Brand/Article/Note выгружаются с пустыми соответствующими ячейками,
+не изменяя сохранённый JSON. Локальная копия шаблона и её происхождение —
+[src/resources](../src/resources/README.md). Других Excel-вариантов спецификации нет.
 
 | Метод и путь | Права и результат |
 | --- | --- |

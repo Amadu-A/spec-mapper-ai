@@ -2,7 +2,15 @@
 /** Завершение подбора допускает общий approve; очистка использует versioned DELETE. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import {canApprove,clearSelectionRequest} from "../../src/web/static/js/state.js";
+import {canApprove,canDownloadExport,clearSelectionRequest} from "../../src/web/static/js/state.js";
+
+test("Excel доступен только после утверждения, предварительные JSON сохранены",()=>{
+  for(const kind of ["result.xlsx","approved.json"]){
+    assert.equal(canDownloadExport(kind,"approved"),true);
+    for(const state of ["queued","ready_for_review","complete","failed","expired"])assert.equal(canDownloadExport(kind,state),false);
+  }
+  for(const kind of ["source.json","result.json"])assert.equal(canDownloadExport(kind,"ready_for_review"),true);
+});
 
 test("общее подтверждение доступно для готового подбора и спорных строк",()=>{
   assert.equal(canApprove("complete"),true);

@@ -83,14 +83,14 @@ async def test_extended_spec_roundtrip_api_pg_approval_xlsx(system, extended_sou
         )
         excel = await client.get(prefix + "/result.xlsx", headers=headers)
         sheet = load_workbook(BytesIO(excel.content), data_only=False).active
-        columns = {cell.value: cell.column for cell in sheet[1]}
+        columns = dict(zip(SOURCE_FIELDS, ["C", "D", "E", "Q", "R", "M", "N", "S"], strict=True))
         for index, row in enumerate(document["items"], 2):
             for name, expected in row.items():
-                cell = sheet.cell(index, columns[name])
+                cell = sheet[f"{columns[name]}{index}"]
                 assert (cell.value or "") == expected
                 if expected:
                     assert cell.data_type == "s"
-            assert sheet.cell(index, columns["file_name"]).value == document["file_name"]
+            assert sheet[f"P{index}"].value == document["file_name"]
         assert (await client.get(prefix + "/source.json", headers=headers)).json() == document
         assert (
             await client.get(prefix + "/approved.json", headers={"X-API-Key": "bad"})

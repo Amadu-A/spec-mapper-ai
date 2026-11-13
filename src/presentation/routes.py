@@ -192,11 +192,20 @@ async def json_report(request: Request, job_id: UUID, current: Owner) -> Respons
     )
 
 
-@router.get("/mappings/{job_id}/result.xlsx")
+@router.get(
+    "/mappings/{job_id}/result.xlsx",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}}},
+        409: {"description": "not_approved: результат ещё не утверждён"},
+        404: {"description": "Задание не найдено или недоступно владельцу"},
+        410: {"description": "Срок хранения задания истёк"},
+    },
+)
 async def xlsx_report(request: Request, job_id: UUID, current: Owner) -> Response:
-    """Строит Excel вне event loop, сохраняя исходные строки literal text."""
-    job = await request.app.state.container.mappings.result(current, str(job_id))
-    content = await asyncio.to_thread(export_xlsx, job)
+    """Выдаёт Excel из утверждённого снимка; до утверждения — not_approved, owner/TTL сохранены."""
+    snapshot = await request.app.state.container.jobs.approved(str(job_id), current)
+    content = await asyncio.to_thread(export_xlsx, snapshot)
     return Response(
         content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

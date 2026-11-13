@@ -4,7 +4,7 @@ import { api, writeOptions } from "./api.js";
 import { element } from "./dom.js";
 import { sourceAttributes } from "./source-fields.js";
 import { createSelection } from "./selection.js";
-import { canApprove, clearSelectionRequest, debounce, labels, newIdempotencyKey, pageInfo, stages, terminal, validUuid } from "./state.js";
+import { canApprove, canDownloadExport, clearSelectionRequest, debounce, labels, newIdempotencyKey, pageInfo, stages, terminal, validUuid } from "./state.js";
 
 export function createMapping(notify) {
   /** Подключает элементы рабочей таблицы и возвращает восстановление задания по ID. */
@@ -33,7 +33,7 @@ export function createMapping(notify) {
   function disableExports(disabled) {
     /** Не позволяет скачать чужое, незавершённое или истёкшее задание из UI. */
     document.querySelectorAll("[data-export]").forEach(link => {
-      const unavailable = disabled || link.dataset.export === "approved.json" && currentStatus !== "approved";
+      const unavailable = disabled || !canDownloadExport(link.dataset.export, currentStatus);
       link.setAttribute("aria-disabled", String(unavailable));
       if (unavailable) link.removeAttribute("href");
       else link.href = `/api/v1/mappings/${jobId}/${link.dataset.export}`;

@@ -11,6 +11,11 @@ export function canApprove(status, busy = false) {
   /** Общее подтверждение доступно после подбора, включая спорные предложения и null. */
   return !busy && ["complete", "ready_for_review"].includes(status);
 }
+export function canDownloadExport(kind, status) {
+  /** Excel и финальный JSON доступны только после утверждения; предварительный JSON сохранён. */
+  return ["complete", "ready_for_review", "approved"].includes(status)
+    && (!["result.xlsx", "approved.json"].includes(kind) || status === "approved");
+}
 export function clearSelectionRequest(jobId, index, revision) {
   /** Удаляет только соответствие строки с актуальной revision, сохраняя исходный документ. */
   return { path: `/api/v1/mappings/${jobId}/rows/${index}/selection?revision=${revision}`, options: { method: "DELETE" } };

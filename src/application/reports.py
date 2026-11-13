@@ -4,14 +4,37 @@
 from __future__ import annotations
 
 import json
+from copy import copy
 from io import BytesIO
+from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
-from src.domain.models import SOURCE_FIELDS, source_view
+from src.domain.models import source_view
 from src.observability import timed
+
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "resources/specification_v1.xlsx"
+ITEM_COLUMNS = {
+    "Caption": "C",
+    "Units": "D",
+    "Quantity": "E",
+    "UserComment1": "Q",
+    "Pages": "R",
+    "Brand": "M",
+    "Article": "N",
+    "Note": "S",
+}
+MAPPING_HEADERS = (
+    "Наименование 1С",
+    "Код номенклатуры 1С",
+    "GUID номенклатуры 1С",
+    "Единица измерения 1С",
+    "Статус сопоставления",
+    "Индекс позиции Mapper",
+)
 
 
 def export_json(job: dict) -> dict:
@@ -56,67 +79,75 @@ def export_json(job: dict) -> dict:
 
 
 @timed("mapping_export_xlsx")
-def export_xlsx(job: dict) -> bytes:
-    """Пишет все исходные строки как literal text: формулы не исполняются и текст не изменяется."""
-    workbook = Workbook(write_only=True)
-    sheet = workbook.create_sheet("Сопоставление")
-    headers = [
-        *SOURCE_FIELDS,
-        "Наименование 1С",
-        "Код 1С",
-        "GUID 1С",
-        "Внутренний UUID",
-        "Единица 1С",
-        "Статус",
-        "Cosine-score",
-        "Проверено человеком",
-        "Версия каталога",
-        "file_name",
-        "Марка 1С",
-        "Артикул 1С",
-        "Производитель 1С",
-    ]
-    sheet.freeze_panes = "A2"
-    sheet.column_dimensions["A"].width = 65
-    sheet.column_dimensions["F"].width = 65
-    for column in "BCDEGHIJKLMN":
-        sheet.column_dimensions[column].width = 22
-    cells = []
-    for header in headers:
-        cell = WriteOnlyCell(sheet, value=header)
-        cell.font = Font(color="FFFFFF", bold=True)
-        cell.fill = PatternFill("solid", fgColor="244B76")
-        cells.append(cell)
-    sheet.append(cells)
-    report = export_json(job)
-    for row in report["items"]:
-        item, match = row["onec"] or {}, row["matching"]
+def export_xlsx(snapshot: dict) -> bytes:
+    """Заполняет локальный шаблон Extracting только из неизменяемого утверждённого снимка."""
+    workbook = load_workbook(TEMPLATE_PATH)
+    sheet = workbook["Лист_1"]
+    add_source_column(sheet)
+    sample_row = sheet.max_row
+    sample_cells = [(cell.column, copy(cell._style), cell.value) for cell in sheet[sample_row]]
+    sample_dimension = copy(sheet.row_dimensions[sample_row])
+    for column, (header, width) in enumerate(
+        zip(MAPPING_HEADERS, (63, 28, 38, 24, 26, 26), strict=True), start=20
+    ):
+        cell = sheet.cell(1, column, header)
+        cell._style = copy(sheet["S1"]._style)
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    for index, row in enumerate(snapshot["items"], start=2):
+        if index > sample_row:
+            dimension = copy(sample_dimension)
+            dimension.index = index
+            sheet.row_dimensions[index] = dimension
+            for column, style, value in sample_cells:
+                target = sheet.cell(index, column)
+                target._style = copy(style)
+                target.value = value
+        for field, column in ITEM_COLUMNS.items():
+            cell = sheet[f"{column}{index}"]
+            cell.value = row.get(field, "")
+            cell.data_type = "s"
+        source = sheet[f"P{index}"]
+        source.value = snapshot.get("file_name", "")
+        source.data_type = "s"
+        item = row["onec"] or {}
         values = [
-            *[row[field] for field in SOURCE_FIELDS],
             item.get("name", ""),
             item.get("code", ""),
             item.get("onec_guid", ""),
-            item.get("guid", ""),
             item.get("unit", ""),
-            match["status"],
-            match["score"],
-            "Да" if match["confirmed"] else "Нет",
-            job["data"]["catalog_version"],
-            report["file_name"],
-            item.get("brand", ""),
-            item.get("article", ""),
-            item.get("manufacturer", ""),
+            row["matching"]["status"],
+            row["index"],
         ]
-        cells = []
-        for value in values:
-            cell = WriteOnlyCell(sheet, value=value)
+        for column, value in enumerate(values, start=20):
+            cell = sheet.cell(index, column, value)
+            cell._style = copy(sheet[f"S{index}"]._style)
             if isinstance(value, str):
                 cell.data_type = "s"
-            cells.append(cell)
-        sheet.append(cells)
+    last_row = len(snapshot["items"]) + 1
+    if last_row < sample_row:
+        sheet.delete_rows(last_row + 1, sample_row - last_row)
+        for index in list(sheet.row_dimensions):
+            if index > last_row:
+                del sheet.row_dimensions[index]
     output = BytesIO()
     workbook.save(output)
+    workbook.close()
     return output.getvalue()
+
+
+def add_source_column(sheet: Worksheet) -> None:
+    """Повторяет добавление графы P из Extracting, сохраняя стили и ширину исходных A:S."""
+    sheet.insert_cols(16)
+    for column in range(18, 15, -1):
+        target = get_column_letter(column + 1)
+        dimension = copy(sheet.column_dimensions[get_column_letter(column)])
+        dimension.index = target
+        dimension.min = dimension.max = column + 1
+        sheet.column_dimensions[target] = dimension
+    sheet.column_dimensions["P"].width = 30
+    for index in range(1, sheet.max_row + 1):
+        sheet[f"P{index}"]._style = copy(sheet[f"Q{index}"]._style)
+    sheet["P1"] = "Источник/Наименование файла"
 
 
 def export_catalog_xlsx(report: dict) -> bytes:

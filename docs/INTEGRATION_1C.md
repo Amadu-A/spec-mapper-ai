@@ -124,7 +124,9 @@ Content-Type: application/json
 
 После утверждения изменения запрещены (`result_approved`, 409).
 `GET /api/v1/mappings/{job_id}/approved.json` до утверждения — 409 `not_approved`.
-`source.json` — оригинал, `result.json`/`result.xlsx` — предварительные экспорты.
+`source.json` — оригинал, `result.json` — предварительный экспорт.
+`result.xlsx` доступен только после утверждения (до него — 409 `not_approved`):
+шаблон Extracting A:S и шесть полей 1С/Mapper T:Y из того же approval snapshot.
 Для создания документа получать `approved.json`.
 
 Сокращённый пример финального результата:

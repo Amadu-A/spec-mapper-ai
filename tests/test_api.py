@@ -145,13 +145,22 @@ async def test_manual_export_pagination_and_formula_literals(system, source):
         ).json()
         assert exported["items"][0]["UserComment1"] == snapshot["items"][0]["UserComment1"]
         assert exported["items"][0]["onec"] is None
+        assert (
+            await client.get(f"/api/v1/mappings/{job_id}/result.xlsx", headers=headers)
+        ).status_code == 409
+        approval = await client.post(
+            f"/api/v1/mappings/{job_id}/approve",
+            json={"revision": selected.json()["revision"]},
+            headers=headers,
+        )
+        assert approval.status_code == 200
         excel = await client.get(f"/api/v1/mappings/{job_id}/result.xlsx", headers=headers)
         workbook = load_workbook(BytesIO(excel.content), data_only=False)
         sheet = workbook.active
         assert sheet.max_row == 3
-        assert sheet["D2"].value == snapshot["items"][0]["UserComment1"]
-        assert sheet["D2"].data_type == "s"
-        assert sheet["C2"].value == " 2,50 "
+        assert sheet["Q2"].value == snapshot["items"][0]["UserComment1"]
+        assert sheet["Q2"].data_type == "s"
+        assert sheet["E2"].value == " 2,50 "
 
 
 async def test_upload_limit_and_security_headers(system, source):

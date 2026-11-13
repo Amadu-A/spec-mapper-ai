@@ -3,6 +3,7 @@
 import {api} from "./api.js";
 import {element} from "./dom.js";
 import {labels,date,number,tone} from "./dashboard-state.js";
+import {canDownloadExport} from "./state.js";
 export function createJobs(operator,notify) {
   /** Пагинация имеет защиту от запоздалого ответа предыдущего фильтра. */
   const root=document.querySelector("[data-jobs-panel]");if(!root)return ()=>{};
@@ -20,7 +21,7 @@ export function createJobs(operator,notify) {
         const action=element("td");if(job.can_open){const link=element("a","button","Открыть");link.href=`/mapping?job=${job.job_id}`;action.append(link);}else action.append(element('span','','Только метаданные'));
         const menu=element('details','job-actions'),summary=element('summary','','Ещё');menu.append(summary);
         const copy=element('button','button','Скопировать UUID');copy.type='button';copy.addEventListener('click',async()=>{try{if(navigator.clipboard)await navigator.clipboard.writeText(job.job_id);else{const input=element('textarea');input.value=job.job_id;action.append(input);input.select();const copied=document.execCommand('copy');input.remove();if(!copied)throw new Error('Выделите UUID в таблице и скопируйте вручную');}notify('Полный UUID скопирован');}catch(error){notify(error.message,true);}});menu.append(copy,element('p','',`Статус: ${labels[job.status]||job.status}${job.error_code?` · ${job.error_code}`:''}`));
-        if(job.can_open&&['complete','ready_for_review','approved'].includes(job.status)){for(const ext of ['source.json','result.json','result.xlsx',...(job.status==='approved'?['approved.json']:[])]){const link=element('a','button',ext);link.href=`/api/v1/mappings/${job.job_id}/${ext}`;menu.append(link);}}
+        if(job.can_open){for(const ext of ['source.json','result.json','result.xlsx','approved.json'].filter(ext=>canDownloadExport(ext,job.status))){const link=element('a','button',ext);link.href=`/api/v1/mappings/${job.job_id}/${ext}`;menu.append(link);}}
         action.append(menu);row.append(action);return row;
       }));
       find("[data-jobs-empty]").hidden=!!data.items.length;find("[data-jobs-empty]").textContent="Нет заданий по выбранному фильтру";

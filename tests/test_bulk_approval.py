@@ -139,10 +139,11 @@ async def test_bulk_approval_mixed_states_snapshots_metrics_and_excel(system, so
         workbook = load_workbook(BytesIO(xlsx.content))
         values = list(workbook.active.iter_rows(min_row=2, values_only=True))
         for actual, expected in zip(values, original["items"], strict=True):
-            assert list(actual[:5]) == [expected[name] for name in SOURCE_FIELDS]
-            headers = [cell.value for cell in workbook.active[1]]
-            assert actual[headers.index("Проверено человеком")] == "Да"
-        assert workbook.active["D3"].data_type == "s"
+            assert [actual[column] for column in [2, 3, 4, 16, 17]] == [
+                expected[name] for name in SOURCE_FIELDS
+            ]
+        assert [row[23] for row in values] == ["matched", "manual", "not_found", "not_found"]
+        assert workbook.active["Q3"].data_type == "s"
 
 
 async def test_delete_selection_cookie_csrf_owner_revision_and_approval(system, source):

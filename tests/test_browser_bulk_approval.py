@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import uvicorn
+from openpyxl import load_workbook
 from playwright.async_api import async_playwright, expect
 
 from src.main import create_app
@@ -16,7 +17,9 @@ from src.main import create_app
 pytestmark = pytest.mark.e2e
 
 
-async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(system, source):
+async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(
+    system, source, tmp_path
+):
     """Не требует покликового ревью, не выбирает Top-1 вместо null, сохраняет source дословно."""
     container, *_ = system
     container.settings.match_threshold = 1.0
@@ -77,6 +80,9 @@ async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(sy
             )
             await expect(page.locator("[data-rows] tr")).to_have_count(3)
             await expect(page.locator("[data-approve]")).to_be_enabled()
+            excel_link = page.locator("[data-export='result.xlsx']")
+            await expect(excel_link).to_have_attribute("aria-disabled", "true")
+            assert await excel_link.get_attribute("href") is None
             await expect(page.locator("[data-approval-status]")).to_contain_text(
                 "сразу во всей спецификации"
             )
@@ -137,6 +143,17 @@ async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(sy
             snapshot = await approved.json()
             assert [item["onec"] is None for item in snapshot["items"]] == [True, False, True]
             assert all(item["matching"]["confirmed"] for item in snapshot["items"])
+            await expect(excel_link).to_have_attribute(
+                "href", f"/api/v1/mappings/{job_id}/result.xlsx"
+            )
+            async with page.expect_download() as downloaded:
+                await excel_link.click()
+            excel_path = tmp_path / "mapping.xlsx"
+            await (await downloaded.value).save_as(excel_path)
+            sheet = load_workbook(excel_path).active
+            assert sheet.title == "Лист_1" and sheet.max_column == 25 and sheet.max_row == 4
+            assert sheet["T2"].value is None and sheet["T3"].value
+            assert [sheet[f"Y{index}"].value for index in range(2, 5)] == [0, 1, 2]
             for original, result in zip(document["items"], snapshot["items"], strict=True):
                 assert all(result[key] == value for key, value in original.items())
             await asyncio.to_thread(Path("test-results").mkdir, exist_ok=True)
