@@ -28,6 +28,21 @@ def isolate_application_environment(request, monkeypatch):
             monkeypatch.delenv(name)
 
 
+@pytest.fixture(autouse=True)
+def browser_assertion_budget(request):
+    """Даёт E2E один цикл UI refresh (10 с) и запас на HTTP, не меняя API/unit timeout."""
+    if not request.node.get_closest_marker("e2e"):
+        yield
+        return
+    from playwright.async_api import expect
+
+    expect.set_options(timeout=15000)
+    try:
+        yield
+    finally:
+        expect.set_options(timeout=5000)
+
+
 @pytest.fixture
 def settings():
     """Задаёт только фиктивные credentials и короткий polling без загрузки реального .env."""

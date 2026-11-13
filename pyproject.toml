@@ -39,7 +39,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["live: требует подготовленных PostgreSQL/Qdrant/RabbitMQ/shared-embedding", "e2e: требует запущенного сервиса"]
+markers = ["live: требует подготовленных PostgreSQL/Qdrant/RabbitMQ/shared-embedding", "e2e: запускает изолированный тестовый HTTP-сервис и Playwright"]
 
 [tool.coverage.run]
 branch = true

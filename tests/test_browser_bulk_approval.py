@@ -4,12 +4,15 @@
 import asyncio
 import json
 import socket
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import uvicorn
 from openpyxl import load_workbook
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright, expect
 
 from src.main import create_app
@@ -17,8 +20,59 @@ from src.main import create_app
 pytestmark = pytest.mark.e2e
 
 
+@asynccontextmanager
+async def export_read_proxy(base):
+    """Инъецирует разрыв TCP перед ответом GET, затем передаёт настоящий HTTP с теми же cookie."""
+    endpoint = urlsplit(base)
+    control = {"attempts": 0, "resets": 1, "http_status": None}
+
+    async def accept(reader, writer):
+        """Проверяет только чтения: transient reset, постоянный reset и HTTP 503 различаются."""
+        upstream = None
+        try:
+            header = await reader.readuntil(b"\r\n\r\n")
+            assert header.startswith(b"GET ")
+            control["attempts"] += 1
+            if control["resets"]:
+                control["resets"] -= 1
+                writer.transport.abort()
+                return
+            if control["http_status"]:
+                writer.write(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                await writer.drain()
+                return
+            source, upstream = await asyncio.open_connection(endpoint.hostname, endpoint.port)
+            lines = [
+                line
+                for line in header.split(b"\r\n")
+                if line and not line.lower().startswith(b"connection:")
+            ]
+            upstream.write(b"\r\n".join(lines) + b"\r\nConnection: close\r\n\r\n")
+            await upstream.drain()
+            while chunk := await source.read(65536):
+                writer.write(chunk)
+                await writer.drain()
+        finally:
+            for stream in [upstream, writer]:
+                if stream is not None:
+                    stream.close()
+                    with suppress(ConnectionError):
+                        await stream.wait_closed()
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    try:
+        yield f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}", control
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize("reset_read", [False, True])
 async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(
-    system, source, tmp_path
+    system, source, tmp_path, reset_read
 ):
     """Не требует покликового ревью, не выбирает Top-1 вместо null, сохраняет source дословно."""
     container, *_ = system
@@ -63,13 +117,22 @@ async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(
             context = await browser.new_context(viewport={"width": 1560, "height": 1080})
             page = await context.new_page()
             errors = []
+            network = []
             page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on(
+                "response",
+                lambda response: network.append((response.status, urlsplit(response.url).path)),
+            )
+            page.on(
+                "requestfailed",
+                lambda request: network.append((request.failure, urlsplit(request.url).path)),
+            )
             await page.goto(base + "/mapping")
             await expect(page.locator("[data-import]")).to_be_enabled(timeout=15000)
             await expect(page.locator('link[rel="icon"]')).to_have_attribute(
                 "href", "/static/favicon.svg"
             )
-            icon = await page.request.get(base + "/static/favicon.svg")
+            icon = await page.request.get(base + "/static/favicon.svg", max_retries=2)
             assert icon.status == 200 and "image/svg+xml" in icon.headers["content-type"]
             await page.locator("[data-import]").set_input_files(
                 {
@@ -132,14 +195,51 @@ async def test_bulk_approval_keeps_current_choices_and_clear_is_explicit_null(
             assert not await page.locator("[data-drawer]").is_visible()
             for node in await page.locator("[data-select-row]").all():
                 await expect(node).to_be_disabled()
+            if reset_read:
+                restored_id = page.url.split("job=", 1)[1].split("&", 1)[0]
+
+                async def disconnect_status(route):
+                    """Проверяет восстановление polling после одного отказа status GET."""
+                    await route.abort("failed")
+
+                await page.route(f"**/api/v1/mappings/{restored_id}", disconnect_status, times=1)
+            reload_start = len(network)
             await page.reload()
-            await expect(page.locator("[data-approval-status]")).to_contain_text(
-                "Результат утверждён"
-            )
+            try:
+                await expect(page.locator("[data-approval-status]")).to_contain_text(
+                    "Результат утверждён", timeout=15000
+                )
+            except AssertionError as error:
+                notice = await page.locator("[data-notice]").text_content()
+                raise AssertionError(
+                    f"Reload не завершён: {notice}; JS: {errors}; HTTP: {network[reload_start:]}"
+                ) from error
             job_id = page.url.split("job=", 1)[1].split("&", 1)[0]
-            source_response = await page.request.get(f"{base}/api/v1/mappings/{job_id}/source.json")
+            if reset_read:
+                async with export_read_proxy(base) as (proxy, control):
+                    read_url = f"{proxy}/api/v1/mappings/{job_id}/source.json"
+                    recovered = await page.request.get(read_url, max_retries=2)
+                    assert recovered.status == 200 and await recovered.json() == document
+                    assert control["attempts"] == 2
+                    control.update(attempts=0, resets=0, http_status=503)
+                    rejected = await page.request.get(read_url, max_retries=2)
+                    assert rejected.status == 503 and control["attempts"] == 1
+                    control.update(attempts=0, resets=3, http_status=None)
+                    with pytest.raises(
+                        PlaywrightError, match="ECONNRESET|socket hang up|Failed after"
+                    ):
+                        await page.request.get(read_url, max_retries=2)
+                    assert control["attempts"] == 3
+            # Повторяется только сетевой ECONNRESET на безопасном GET, не HTTP-ошибки/записи.
+            source_response = await page.request.get(
+                f"{base}/api/v1/mappings/{job_id}/source.json", max_retries=2
+            )
+            assert source_response.status == 200
             assert await source_response.json() == document
-            approved = await page.request.get(f"{base}/api/v1/mappings/{job_id}/approved.json")
+            approved = await page.request.get(
+                f"{base}/api/v1/mappings/{job_id}/approved.json", max_retries=2
+            )
+            assert approved.status == 200
             snapshot = await approved.json()
             assert [item["onec"] is None for item in snapshot["items"]] == [True, False, True]
             assert all(item["matching"]["confirmed"] for item in snapshot["items"])

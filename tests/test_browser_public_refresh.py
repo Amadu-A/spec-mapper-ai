@@ -91,7 +91,16 @@ async def test_public_refresh_button_cooldown_reload_and_operator_only_fields(sy
             await expect(page.locator("[data-sync-time]")).to_be_disabled()
             await expect(page.locator("[data-sync-enabled]")).to_be_disabled()
             assert "onec.test" not in await page.content()
-            await page.locator("[data-sync-now]").click()
+            async with page.expect_response(
+                lambda response: (
+                    response.request.method == "POST"
+                    and response.url.endswith("/api/v1/catalog/refresh")
+                )
+            ) as queued:
+                await page.locator("[data-sync-now]").click()
+            queued_response = await queued.value
+            assert queued_response.status == 202
+            refresh_id = (await queued_response.json())["job_id"]
             await expect(page.locator("[data-notice]")).to_contain_text("очередь")
             await expect(page.locator("[data-sync-now]")).to_be_disabled()
             await expect(page.locator("[data-sync-now]")).to_contain_text("через")
@@ -102,9 +111,12 @@ async def test_public_refresh_button_cooldown_reload_and_operator_only_fields(sy
             await expect(page.locator("[data-sync-now]")).to_be_disabled()
             await expect(page.locator("[data-sync-now]")).to_contain_text("через")
             for _ in range(100):
-                if not await container.jobs.pending():
+                refresh = await container.jobs.get(refresh_id)
+                if refresh["state"] in {"complete", "failed"}:
                     break
                 await asyncio.sleep(0.05)
+            # Пустой outbox не означает завершение: worker уже мог забрать задание по lease.
+            assert refresh["state"] == "complete", refresh["error_code"]
             clock[0] += 61
             await page.reload()
             await expect(page.locator("[data-sync-now]")).to_be_enabled()
