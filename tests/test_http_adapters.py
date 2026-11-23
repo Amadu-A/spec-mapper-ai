@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -55,6 +56,42 @@ async def test_upstream_errors_are_distinct(settings, status, code):
         with pytest.raises(MapperError) as error:
             await HttpExtractionSource(client, settings).fetch(str(uuid4()), progress)
         assert error.value.code == code
+
+
+@pytest.mark.parametrize("retry_after,delay", [("2", 2), (None, 3), ("invalid", 3), ("nan", 3)])
+async def test_upstream_rate_limit_waits_for_status_and_result(
+    settings, source, monkeypatch, retry_after, delay
+):
+    """429 не завершает обработку; Retry-After учитывается и при опросе, и при скачивании."""
+    sleeps = AsyncMock()
+    monkeypatch.setattr("src.infrastructure.http_clients.asyncio.sleep", sleeps)
+    calls = {"status": 0, "result": 0}
+
+    def handler(request):
+        kind = "result" if request.url.path.endswith("result.json") else "status"
+        calls[kind] += 1
+        if calls[kind] == 1:
+            return httpx.Response(429, headers={"Retry-After": retry_after} if retry_after else {})
+        return httpx.Response(200, json=source if kind == "result" else {"status": "completed"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await HttpExtractionSource(client, settings).fetch(str(uuid4()), progress)
+    assert result == source
+    assert calls == {"status": 2, "result": 2}
+    assert [call.args[0] for call in sleeps.await_args_list] == [delay, delay]
+
+
+async def test_upstream_rate_limit_obeys_overall_timeout(settings):
+    """Даже повторяющийся 429 с большим Retry-After не продлевает общий timeout."""
+    settings = settings.model_copy(update={"upstream_timeout_seconds": 0.05})
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(429, headers={"Retry-After": "120"})
+        )
+    ) as client:
+        with pytest.raises(MapperError) as error:
+            await HttpExtractionSource(client, settings).fetch(str(uuid4()), progress)
+    assert error.value.code == "upstream_timeout"
 
 
 @pytest.mark.parametrize(

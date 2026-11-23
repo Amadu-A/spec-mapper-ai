@@ -13,8 +13,14 @@ from src.domain.models import CatalogItem, ParsedCatalog
 class JobRepository(Protocol):
     """Контракт долговечных заданий с изоляцией владельцев и fencing токенами."""
 
-    async def create(self, owner: str, key: str, payload: dict, kind: str) -> dict:
+    async def create(
+        self, owner: str, key: str, payload: dict, kind: str, *, pdf: bytes | None = None
+    ) -> dict:
         """Атомарно сохраняет задание и outbox либо возвращает идемпотентный ответ."""
+        ...
+
+    async def pdf(self, job_id: str) -> bytes:
+        """Возвращает сохранённый PDF внутреннему worker с проверкой TTL."""
         ...
 
     async def get(self, job_id: str, owner: str | None = None) -> dict:
@@ -202,6 +208,14 @@ class VectorIndex(Protocol):
 
 class ExtractionSource(Protocol):
     """Авторизованное получение только окончательного результата upstream."""
+
+    async def upload(self, content: bytes, filename: str) -> str:
+        """Загружает PDF и возвращает ID документа для durable checkpoint."""
+        ...
+
+    async def start(self, document_id: str, pages: str, project_code: str, key: str) -> str:
+        """Идемпотентно запускает извлечение из сохранённого документа."""
+        ...
 
     async def fetch(self, source_job_id: str, progress) -> dict:
         """Ограниченно опрашивает статусы и однократно загружает готовый JSON."""

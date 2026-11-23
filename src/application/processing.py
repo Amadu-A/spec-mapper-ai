@@ -155,9 +155,25 @@ class JobProcessor:
             pulse.cancel()
             await asyncio.gather(pulse, return_exceptions=True)
 
+    async def _extract_pdf(self, job: dict, checkpoint, progress) -> None:
+        """Сохраняет внешние ID до следующего шага для возобновления после restart."""
+        data, spec = job["data"], job["data"]["specification"]
+        await progress("extracting")
+        if not data.get("upstream_document_id"):
+            content = await self.jobs.pdf(job["id"])
+            data["upstream_document_id"] = await self.extraction.upload(content, spec["filename"])
+            await checkpoint(data=data, state="extracting", stage="extracting")
+        if not data.get("source_job_id"):
+            data["source_job_id"] = await self.extraction.start(
+                data["upstream_document_id"], spec["pages"], spec["project_code"], job["id"]
+            )
+            await checkpoint(data=data, state="extracting", stage="extracting")
+
     async def _match(self, job: dict, checkpoint, progress) -> None:
         """Переиспользует source snapshot и пачки после restart; исходные дубли не схлопывает."""
         data = job["data"]
+        if data.get("source") is None and data.get("specification"):
+            await self._extract_pdf(job, checkpoint, progress)
         if data.get("source") is None:
             data["source"] = await self.extraction.fetch(data["source_job_id"], progress)
             data["source_hash"] = digest(data["source"])

@@ -3,7 +3,17 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -32,6 +42,16 @@ class JobRow(Base):
     revision: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     data: Mapped[dict] = mapped_column(JSON)
+
+
+class SpecificationUploadRow(Base):
+    """Временный PDF удаляется вместе с заданием по TTL."""
+
+    __tablename__ = "specification_uploads"
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class CatalogVersionRow(Base):
