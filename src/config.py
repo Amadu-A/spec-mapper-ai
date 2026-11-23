@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     poll_seconds: float = Field(3, ge=0.05, le=60)
     upstream_timeout_seconds: int = Field(900, ge=1, le=3300)
     http_timeout_seconds: int = Field(30, ge=1, le=120)
+    max_pdf_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
     max_result_bytes: int = Field(15000000, ge=1024, le=50000000)
     max_xml_bytes: int = Field(200000000, ge=1024)
     max_items: int = Field(10000, ge=1, le=50000)

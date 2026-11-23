@@ -23,6 +23,7 @@ class LimitsMiddleware:
         timeout: int,
         webhook_max_bytes=32768,
         webhook_per_minute=120,
+        max_pdf_bytes=50 * 1024 * 1024,
     ) -> None:
         """Задаёт общие лимиты одного API-процесса; reverse proxy не считается доверенным."""
         self.app, self.max_bytes, self.per_minute, self.timeout = (
@@ -31,6 +32,7 @@ class LimitsMiddleware:
             per_minute,
             timeout,
         )
+        self.max_pdf_bytes = max_pdf_bytes
         self.requests = defaultdict(deque)
         self.webhook_max_bytes, self.webhook_per_minute = webhook_max_bytes, webhook_per_minute
 
@@ -63,6 +65,8 @@ class LimitsMiddleware:
             return
         if counted:
             bucket.append(now)
+        if scope.get("path") == "/api/v1/specifications":
+            maximum = self.max_pdf_bytes + 65536
         content = bytearray()
         if scope["method"] in {"POST", "PUT", "PATCH"}:
             try:

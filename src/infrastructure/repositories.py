@@ -31,6 +31,7 @@ from src.infrastructure.database import (
     CatalogStateRow,
     CatalogVersionRow,
     JobRow,
+    SpecificationUploadRow,
     VectorCacheRow,
 )
 from src.infrastructure.telemetry import add_metrics, metric_delta, record_catalog
@@ -76,6 +77,7 @@ def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float
             "source_job_id": payload.get("source_job_id"),
             "source": payload.get("document"),
             "rows": [],
+            **({"specification": payload["specification"]} if "specification" in payload else {}),
             "ingestion": "import-json" if "document" in payload else "extracting",
             **({"catalog_sync": payload["catalog_sync"]} if "catalog_sync" in payload else {}),
             **(
@@ -92,7 +94,15 @@ class SqlJobs:
         """Получает фабрику коротких транзакций и заменяемые часы для проверки TTL."""
         self.sessions, self.settings, self.clock = sessions, settings, clock
 
-    async def create(self, owner: str, key: str, payload: dict, kind: str = "mapping") -> dict:
+    async def create(
+        self,
+        owner: str,
+        key: str,
+        payload: dict,
+        kind: str = "mapping",
+        *,
+        pdf: bytes | None = None,
+    ) -> dict:
         """Уникальный owner/key защищает и от последовательных, и от конкурентных дублей."""
         key_hash, request_hash = digest(key), digest({"kind": kind, "payload": payload})
         try:
@@ -103,6 +113,8 @@ class SqlJobs:
                     row.data, delta = metric_delta(row, row.data, "queued")
                 session.add(row)
                 await session.flush()
+                if pdf is not None:
+                    session.add(SpecificationUploadRow(job_id=row.id, content=pdf))
                 if delta is not None:
                     await add_metrics(session, row, delta)
                 else:
@@ -124,6 +136,15 @@ class SqlJobs:
                         "idempotency_conflict", "Ключ уже использован с другим запросом", 409
                     ) from None
                 return job_dict(row)
+
+    async def pdf(self, job_id: str) -> bytes:
+        """Читает принятый PDF внутреннему worker до истечения TTL."""
+        await self.get(job_id)
+        async with self.sessions() as session:
+            row = await session.get(SpecificationUploadRow, job_id)
+            if row is None:
+                raise MapperError("upload_missing", "Исходный PDF недоступен", 410)
+            return row.content
 
     def _check(self, row: JobRow | None, owner: str | None) -> None:
         """Сначала скрывает чужие задания, затем запрещает доступ после TTL до
@@ -312,6 +333,13 @@ class SqlJobs:
             await session.execute(
                 delete(ApprovalRow).where(
                     ApprovalRow.job_id.in_(
+                        select(JobRow.id).where(JobRow.expires_at <= self.clock())
+                    )
+                )
+            )
+            await session.execute(
+                delete(SpecificationUploadRow).where(
+                    SpecificationUploadRow.job_id.in_(
                         select(JobRow.id).where(JobRow.expires_at <= self.clock())
                     )
                 )

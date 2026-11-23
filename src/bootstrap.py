@@ -15,6 +15,7 @@ from src.application.catalog_events import CatalogEvents
 from src.application.catalog_management import CatalogManagement
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
+from src.application.specifications import Specifications
 from src.config import Settings
 from src.domain.embedding import compatible_embedding
 from src.infrastructure.broker import RabbitBroker
@@ -50,6 +51,7 @@ class Container:
     operator_access: SqlOperatorAccess
     integration_probes: IntegrationProbes
     catalog_events: CatalogEvents
+    specifications: Specifications
 
     async def ready(self) -> dict:
         """Проверяет реальные зависимости; недоступный shared endpoint никогда не
@@ -152,13 +154,14 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         sync,
         catalog_events,
     )
+    mappings = MappingUseCases(jobs, catalog, settings.max_items)
     return Container(
         settings,
         engine,
         http,
         jobs,
         catalog,
-        MappingUseCases(jobs, catalog, settings.max_items),
+        mappings,
         processor,
         RabbitBroker(settings),
         embeddings,
@@ -170,4 +173,5 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         SqlOperatorAccess(sessions, settings, lambda: jobs.clock()),
         IntegrationProbes(http, settings),
         catalog_events,
+        Specifications(jobs, mappings, settings.max_pdf_bytes),
     )

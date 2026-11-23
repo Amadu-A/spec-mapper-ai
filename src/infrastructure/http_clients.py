@@ -7,6 +7,7 @@ import asyncio
 import json
 import math
 from time import monotonic
+from uuid import UUID
 
 import httpx
 
@@ -42,6 +43,64 @@ class HttpExtractionSource:
         """Принимает общий ограниченный HTTP pool и типизированные параметры upstream."""
         self.client, self.settings = client, settings
 
+    async def _submit(self, path: str, **kwargs) -> str:
+        """Проверяет bounded ответ upstream; credentials и тела ошибок не возвращает клиенту."""
+        key = self.settings.extracting_api_key.get_secret_value()
+        if not key:
+            raise MapperError("upstream_key_missing", "Не задан серверный API-ключ извлечения", 503)
+        headers = {"X-API-Key": key, **kwargs.pop("headers", {})}
+        try:
+            payload = await bounded_json(
+                self.client,
+                "POST",
+                self.settings.extracting_base_url.rstrip("/") + path,
+                1000000,
+                headers=headers,
+                **kwargs,
+            )
+            identifier = payload.get("job_id") or payload["id"]
+            if not isinstance(identifier, str):
+                raise ValueError("Expected UUID string")
+            return str(UUID(identifier))
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            names = {
+                400: "invalid_pdf",
+                401: "unauthorized",
+                403: "forbidden",
+                404: "not_found",
+                409: "conflict",
+                410: "expired",
+                413: "upload_limit",
+                422: "validation",
+                429: "rate_limit",
+            }
+            raise MapperError(
+                "upstream_" + names.get(code, "http_error"),
+                "Сервис извлечения отклонил PDF или параметры",
+                503 if code >= 500 or code == 429 else 422,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise MapperError("upstream_timeout", "Сервис извлечения недоступен", 503) from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise MapperError(
+                "upstream_response", "Некорректный ответ сервиса извлечения", 502
+            ) from exc
+
+    async def upload(self, content: bytes, filename: str) -> str:
+        """Загружает PDF с серверным ключом; ID фиксируется worker до запуска анализа."""
+        return await self._submit(
+            "/api/v1/documents", files={"file": (filename, content, "application/pdf")}
+        )
+
+    async def start(self, document_id: str, pages: str, project_code: str, key: str) -> str:
+        """Запускает извлечение идемпотентно по ID общего задания после сохранения документа."""
+        return await self._submit(
+            "/api/v1/extractions",
+            headers={"Idempotency-Key": key},
+            data={"document_id": document_id, "pages": pages, "project_code": project_code},
+        )
+
     async def fetch(self, source_job_id: str, progress) -> dict:
         """Различает terminal ошибки, ждёт финал и ровно один раз скачивает result.json."""
         settings = self.settings
@@ -50,20 +109,33 @@ class HttpExtractionSource:
         url = f"{settings.extracting_base_url.rstrip('/')}/api/v1/extractions/{source_job_id}"
         headers = {"X-API-Key": settings.extracting_api_key.get_secret_value()}
         deadline = monotonic() + settings.upstream_timeout_seconds
+
+        async def get_json(path: str, limit: int) -> dict:
+            """Ожидает снятия ограничения частоты в пределах общего срока ожидания извлечения."""
+            while True:
+                try:
+                    return await bounded_json(self.client, "GET", path, limit, headers=headers)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 429:
+                        raise
+                    delay = max(3.0, settings.poll_seconds)
+                    try:
+                        requested = float(exc.response.headers.get("Retry-After", ""))
+                        if math.isfinite(requested):
+                            delay = max(1.0, requested)
+                    except ValueError:
+                        pass  # Без числового Retry-After используется штатный интервал.
+                    await progress("polling")
+                    await asyncio.sleep(delay)
+
         try:
             async with asyncio.timeout(settings.upstream_timeout_seconds):
                 while monotonic() < deadline:
-                    status = await bounded_json(self.client, "GET", url, 1000000, headers=headers)
+                    status = await get_json(url, 1000000)
                     state = status.get("status")
                     if state in {"completed", "completed_with_warnings"}:
                         await progress("fetching")
-                        payload = await bounded_json(
-                            self.client,
-                            "GET",
-                            url + "/result.json",
-                            settings.max_result_bytes,
-                            headers=headers,
-                        )
+                        payload = await get_json(url + "/result.json", settings.max_result_bytes)
                         return validate_source(payload, settings.max_items)
                     if state in {"failed", "cancelled"}:
                         raise MapperError(

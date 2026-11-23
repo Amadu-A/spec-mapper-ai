@@ -21,6 +21,7 @@ from src.presentation.dashboard_routes import router as dashboard_router
 from src.presentation.middleware import LimitsMiddleware
 from src.presentation.routes import router
 from src.presentation.security import COOKIE, new_session
+from src.presentation.specifications import router as specifications_router
 
 ROOT = Path(__file__).resolve().parent
 
@@ -56,6 +57,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     app.add_middleware(
         LimitsMiddleware,
         max_bytes=container.settings.max_result_bytes,
+        max_pdf_bytes=container.settings.max_pdf_bytes,
         per_minute=container.settings.rate_limit_per_minute,
         timeout=container.settings.http_timeout_seconds,
         webhook_max_bytes=container.settings.onec_webhook_max_body_bytes,
@@ -64,6 +66,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=ROOT / "web" / "templates")
     app.mount("/static", StaticFiles(directory=ROOT / "web" / "static"), name="static")
     app.include_router(router)
+    app.include_router(specifications_router)
     app.include_router(dashboard_router)
     app.include_router(catalog_events_router)
 
