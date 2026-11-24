@@ -80,7 +80,11 @@ async def import_json(
 @router.get("/mappings", response_model=list[MappingStatus])
 async def jobs(request: Request, current: Owner) -> list[dict]:
     """Показывает только историю текущей cookie-сессии либо интеграционного ключа."""
-    return [public_status(job) for job in await request.app.state.container.jobs.list(current)]
+    return [
+        public_status(job)
+        for job in await request.app.state.container.jobs.list(current)
+        if job["kind"] != "invoice"
+    ]
 
 
 @router.get("/mappings/{job_id}", response_model=MappingStatus)
@@ -177,6 +181,7 @@ async def approve(request: Request, job_id: UUID, body: Approval, current: Owner
 @router.get("/mappings/{job_id}/approved.json", response_model=ApprovedExport)
 async def approved_report(request: Request, job_id: UUID, current: Owner) -> Response:
     """Выдаёт неизменяемый финальный JSON, предназначенный для загрузки в 1С."""
+    public_status(await request.app.state.container.jobs.get(str(job_id), current))
     snapshot = await request.app.state.container.jobs.approved(str(job_id), current)
     return JSONResponse(
         snapshot, headers={"Content-Disposition": 'attachment; filename="approved.json"'}
@@ -204,6 +209,7 @@ async def json_report(request: Request, job_id: UUID, current: Owner) -> Respons
 )
 async def xlsx_report(request: Request, job_id: UUID, current: Owner) -> Response:
     """Выдаёт Excel из утверждённого снимка; до утверждения — not_approved, owner/TTL сохранены."""
+    public_status(await request.app.state.container.jobs.get(str(job_id), current))
     snapshot = await request.app.state.container.jobs.approved(str(job_id), current)
     content = await asyncio.to_thread(export_xlsx, snapshot)
     return Response(

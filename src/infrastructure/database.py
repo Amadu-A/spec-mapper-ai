@@ -54,6 +54,17 @@ class SpecificationUploadRow(Base):
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
 
+class InvoiceUploadRow(Base):
+    """Ограниченные blobs пакета счетов; метаданные находятся в job, TTL общий."""
+
+    __tablename__ = "invoice_uploads"
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    file_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
 class CatalogVersionRow(Base):
     """Неизменяемый снимок и метаданные совместимости его коллекции Qdrant."""
 

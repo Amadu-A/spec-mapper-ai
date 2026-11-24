@@ -14,6 +14,8 @@ from src.application.ports import (
     VectorIndex,
 )
 from src.domain.embedding import compatible_embedding
+from src.domain.invoices.adapter import invoice_items, matchable, matching_source
+from src.domain.invoices.models import validate_invoice
 from src.domain.matching import choose, rerank, specification_text
 from src.domain.models import ALGORITHM_VERSION, MapperError, digest
 from src.observability import timed
@@ -34,12 +36,14 @@ class JobProcessor:
         catalog_sources=None,
         catalog_management=None,
         catalog_events=None,
+        invoice_extraction=None,
     ) -> None:
         """Принимает все порты через composition root без создания клиентов в use-case."""
         self.jobs, self.catalog, self.extraction = jobs, catalog, extraction
         self.catalog_sources = catalog_sources
         self.catalog_management = catalog_management
         self.catalog_events = catalog_events
+        self.invoice_extraction = invoice_extraction
         self.embeddings, self.index, self.synchronizer, self.settings = (
             embeddings,
             index,
@@ -172,6 +176,9 @@ class JobProcessor:
     async def _match(self, job: dict, checkpoint, progress) -> None:
         """Переиспользует source snapshot и пачки после restart; исходные дубли не схлопывает."""
         data = job["data"]
+        invoice = job["kind"] == "invoice"
+        if invoice and data.get("source") is None:
+            await self._extract_invoice(job, checkpoint, progress)
         if data.get("source") is None and data.get("specification"):
             await self._extract_pdf(job, checkpoint, progress)
         if data.get("source") is None:
@@ -201,30 +208,48 @@ class JobProcessor:
             data.setdefault("collection", current["collection"])
             data["algorithm_version"] = ALGORITHM_VERSION
             await checkpoint(data=data, state="matching", stage="matching")
-        items, batch_size = data["source"]["items"], self.settings.embedding_batch_size
+        entries = list(invoice_items(data["source"])) if invoice else None
+        items = [entry[2] for entry in entries] if invoice else data["source"]["items"]
+        batch_size = self.settings.embedding_batch_size
         for start in range(len(data["rows"]), len(items), batch_size):
             batch = items[start : start + batch_size]
-            vectors = await self.embeddings.embed([specification_text(row) for row in batch])
-            hits = await self.index.search(data["collection"], vectors, self.settings.top_k)
-            ids = [guid for row in hits for guid, _ in row]
-            metadata = await self.catalog.items(data["catalog_version"], ids)
-            for source, found in zip(batch, hits, strict=True):
-                candidates = rerank(
-                    source,
-                    [
-                        (metadata[guid], score)
-                        for guid, score in found
-                        if guid in metadata and metadata[guid].active
-                    ],
+            derived = (
+                [matching_source(row) for row in batch if matchable(row)] if invoice else batch
+            )
+            matched = iter(await self._match_batch(data, derived))
+            for offset, source in enumerate(batch):
+                if not invoice:
+                    data["rows"].append(next(matched))
+                    continue
+                payment = source.get("row_kind") in {"advance_payment", "final_payment"}
+                row = (
+                    next(matched)
+                    if matchable(source)
+                    else {
+                        "selection": None,
+                        "status": "not_applicable" if payment else "review",
+                        "confirmed": False,
+                        "manually_reviewed": False,
+                        "candidates": [],
+                    }
                 )
-                selected = choose(
-                    candidates, self.settings.match_threshold, self.settings.match_margin
-                )
+                warnings = []
+                if not matchable(source):
+                    warnings.append("payment_row" if payment else "unsupported_row_kind")
+                if source.get("row_kind") == "service":
+                    warnings.append("service_requires_review")
+                if row["selection"] and not row["selection"].get("onec_guid"):
+                    warnings.append("onec_guid_missing")
+                if source.get("requires_manual_review"):
+                    warnings.append("source_requires_review")
+                if warnings and row["status"] == "matched":
+                    row["status"] = "review"
                 data["rows"].append(
                     {
-                        **selected,
-                        "candidates": [c.to_dict() for c in candidates],
-                        "manually_reviewed": False,
+                        **row,
+                        "warnings": warnings,
+                        "reference": entries[start + offset][3],
+                        "row_kind": source.get("row_kind", "product"),
                     }
                 )
             await checkpoint(data=data, state="matching", stage="matching")
@@ -236,3 +261,67 @@ class JobProcessor:
             error_code=None,
             revision=job["revision"] + 1,
         )
+
+    async def _match_batch(self, data: dict, sources: list[dict]) -> list[dict]:
+        """Единственная реализация embeddings/Top-K/rerank/choose для обоих профилей."""
+        if not sources:
+            return []
+        vectors = await self.embeddings.embed([specification_text(row) for row in sources])
+        hits = await self.index.search(data["collection"], vectors, self.settings.top_k)
+        metadata = await self.catalog.items(
+            data["catalog_version"], [guid for row in hits for guid, _ in row]
+        )
+        rows = []
+        for source, found in zip(sources, hits, strict=True):
+            candidates = rerank(
+                source,
+                [
+                    (metadata[guid], score)
+                    for guid, score in found
+                    if guid in metadata and metadata[guid].active
+                ],
+            )
+            rows.append(
+                {
+                    **choose(candidates, self.settings.match_threshold, self.settings.match_margin),
+                    "candidates": [candidate.to_dict() for candidate in candidates],
+                    "manually_reviewed": False,
+                }
+            )
+        return rows
+
+    async def _extract_invoice(self, job: dict, checkpoint, progress) -> None:
+        """Возобновляет пакет 8083 по durable ID/ключу; исходный JSON хранит неизменным."""
+        data = job["data"]
+        if self.invoice_extraction is None:
+            raise MapperError("upstream_unavailable", "Не подключён профиль извлечения счетов", 503)
+        await progress("extracting")
+        if not data.get("source_job_id"):
+            content = await self.jobs.invoice_files(job["id"])
+            data["source_job_id"] = await self.invoice_extraction.submit(
+                data["invoice"], content, job["id"]
+            )
+            await checkpoint(data=data, state="extracting", stage="extracting")
+
+        async def invoice_progress(stage: str, **details) -> None:
+            """Сохраняет предупреждение upstream отдельно от исходника и каталога."""
+            if details.get("upstream_status"):
+                data["upstream_status"] = details["upstream_status"]
+                await checkpoint(data=data, state="extracting", stage=stage)
+            else:
+                await progress(stage)
+
+        source = await self.invoice_extraction.fetch(data["source_job_id"], invoice_progress)
+        validate_invoice(source, self.settings.invoice_max_items)
+        expected = data["invoice"]["files"]
+        if len(source["files"]) != len(expected) or any(
+            file["source_sha256"] != metadata["sha256"]
+            or file["page_count"] != metadata["page_count"]
+            for file, metadata in zip(source["files"], expected, strict=True)
+        ):
+            raise MapperError(
+                "invalid_invoice_source", "Ответ не соответствует принятому пакету", 502
+            )
+        data["source"] = source
+        data["source_hash"] = digest(source)
+        await checkpoint(data=data, state="matching", stage="matching")

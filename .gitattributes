@@ -8,3 +8,6 @@
 *.html text eol=lf
 *.yml text eol=lf
 *.ps1 text eol=crlf
+# Сохраняем контрольные суммы официальных ресурсов и исходное оформление лицензии.
+src/resources/swagger_ui/* text eol=lf
+src/resources/swagger_ui/NOTICE.txt -whitespace

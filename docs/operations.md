@@ -1,6 +1,46 @@
 <!-- docs/operations.md -->
 # Эксплуатация и приёмка
 
+## Обновление invoice-профиля (0006)
+
+Этап 02 добавляет только таблицу `invoice_uploads`; данные 0005, старые PDF/approvals,
+каталог, коллекции Qdrant и расписание сохраняются. PostgreSQL-миграция 0005→0006
+проверена отдельно на временной схеме с сохранением исторического PDF/approval.
+Новых секретов и портов нет: 8087 — web/API, 8088 — прежний operator gateway.
+Перед публикацией дождитесь завершения активных импортов и заданий, используйте
+обычный резервный процесс PostgreSQL/Qdrant проекта. Применять downgrade не требуется.
+
+После ручного push владельцем:
+
+```bash
+cd ~/projects/spec-mapper-ai
+git status --short
+git pull --ff-only
+bash scripts/test.sh
+bash scripts/up.sh
+bash scripts/test.sh --live
+docker compose --env-file .env.example --env-file .env ps
+docker compose --env-file .env.example --env-file .env logs --tail=100 api worker migrate
+curl --fail http://127.0.0.1:8087/health/ready
+curl --fail http://127.0.0.1:8087/api/openapi.json
+```
+
+Продолжать только после успешного завершения каждой команды. Offline `test.sh`
+проверяет код в собственном контейнере, поэтому не требует предварительного up.
+`up.sh` — единственная команда полного запуска/пересборки Mapper и миграций;
+`--live` выполняется после него. Логи не скрываются. Shared stack не перезапускается,
+volumes не удаляются; `down -v`, prune и сброс каталога запрещены для этого обновления.
+Не запускайте `tests/live_invoice_environment.py` как production entrypoint:
+это вспомогательный инструмент для отдельно согласованного временного QA.
+
+Ручная приёмка `/invoices`: загрузить два PDF с разными страницами, дождаться
+Top-5, проверить финансы/поставщиков, открыть preview, найти и перевыбрать товар,
+очистить выбор крестиком, обновить страницу, подтвердить финансовые предупреждения,
+утвердить всё и скачать JSON/Excel. В книге три листа, исходные суммы/дубли/нули
+сохранены. До approve оба итоговых экспорта дают 409. Проверить также прямой JSON,
+платёж без номенклатуры и прежний `/mapping`/`/specifications` процесс.
+[Полный контракт](INVOICE_API.md), [отчёт о проверках и команды Windows](INVOICE_STAGE_02_REPORT.md).
+
 ## Подготовка
 
 Сервер должен иметь Docker/Compose 2.24+, `uv`, доступ к PyPI и image registry для

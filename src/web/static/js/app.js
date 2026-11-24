@@ -2,6 +2,7 @@
 /** Точка входа настоящих страниц: сессия, роль и независимые рабочие модули. */
 import {initializeSession,initializeOperator} from './api.js';
 import {createMapping} from './mapping.js';
+import {createInvoices} from './invoices.js';
 import {validUuid} from './state.js';
 import {refreshSummary,refreshIntegrations,refreshTimeline} from './dashboard.js';
 import {createSync} from './sync-settings.js';
@@ -17,6 +18,7 @@ function notify(message,error=false){
 try{
   await initializeSession();const session=await initializeOperator(),page=document.body.dataset.pageKind;
   if(page==='mapping'){const open=createMapping(notify),job=new URLSearchParams(location.search).get('job');if(job&&validUuid(job))await open(job);}
+  if(page==='invoices'){const open=createInvoices(notify),job=new URLSearchParams(location.search).get('job');if(job&&validUuid(job))await open(job);}
   const sync=createSync(session.operator,notify),jobs=createJobs(session.operator,notify);createEvents(session.operator,notify);createOperator(session,notify);
   const catalogEvents=createCatalogEvents(session.operator,notify);
   if(page==='catalog')await createCatalog(notify);

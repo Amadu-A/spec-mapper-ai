@@ -14,13 +14,24 @@ class JobRepository(Protocol):
     """Контракт долговечных заданий с изоляцией владельцев и fencing токенами."""
 
     async def create(
-        self, owner: str, key: str, payload: dict, kind: str, *, pdf: bytes | None = None
+        self,
+        owner: str,
+        key: str,
+        payload: dict,
+        kind: str,
+        *,
+        pdf: bytes | None = None,
+        uploads: list[bytes] | None = None,
     ) -> dict:
         """Атомарно сохраняет задание и outbox либо возвращает идемпотентный ответ."""
         ...
 
     async def pdf(self, job_id: str) -> bytes:
         """Возвращает сохранённый PDF внутреннему worker с проверкой TTL."""
+        ...
+
+    async def invoice_files(self, job_id: str) -> list[bytes]:
+        """Возвращает упорядоченный пакет worker после проверки общего TTL."""
         ...
 
     async def get(self, job_id: str, owner: str | None = None) -> dict:

@@ -5,7 +5,7 @@ import { element, option } from "./dom.js";
 import { debounce, selectionPayload } from "./state.js";
 import { sourceAttributes } from "./source-fields.js";
 
-export function createSelection(onSaved) {
+export function createSelection(onSaved, { root = "/api/v1/mappings", sourceView = row => row.source } = {}) {
   /** Инициализирует native dialog и возвращает операцию открытия для строки таблицы. */
   const dialog = document.querySelector("[data-drawer]");
   const query = dialog.querySelector("[data-search-candidates]");
@@ -55,7 +55,7 @@ export function createSelection(onSaved) {
     busy = true; save.disabled = true; errorNode.hidden = true;
     dialog.querySelector("[data-save-status]").textContent = "Сохранение…";
     try {
-      await api(`/api/v1/mappings/${active.jobId}/rows/${active.row.index}/selection`, {
+      await api(`${root}/${active.jobId}/rows/${active.row.index}/selection`, {
         method: "PUT", body: JSON.stringify(selectionPayload(selected, active.revision)),
       });
       busy = false; dialog.close(); await onSaved();
@@ -70,9 +70,10 @@ export function createSelection(onSaved) {
     generation++; active = { jobId, row, revision }; selected = undefined;
     busy = false; save.disabled = true; noMatch.checked = false; errorNode.hidden = true;
     query.value = ""; results.replaceChildren();
-    dialog.querySelector("[data-source-caption]").textContent = row.source.Caption;
-    dialog.querySelector("[data-source-meta]").textContent = `${row.source.Units} · ${row.source.Quantity} · стр. ${row.source.Pages} · ${row.source.UserComment1}`;
-    dialog.querySelector("[data-source-meta]").textContent += sourceAttributes(row.source).map(value => `\n${value}`).join("");
+    const source = sourceView(row);
+    dialog.querySelector("[data-source-caption]").textContent = source.Caption;
+    dialog.querySelector("[data-source-meta]").textContent = `${source.Units} · ${source.Quantity} · стр. ${source.Pages} · ${source.UserComment1}`;
+    dialog.querySelector("[data-source-meta]").textContent += sourceAttributes(source).map(value => `\n${value}`).join("");
     dialog.querySelector("[data-save-status]").textContent = "Выберите позицию для подтверждения";
     const list = dialog.querySelector("[data-candidates]");
     list.replaceChildren(...row.candidates.map(candidate => option(candidate.item, candidate, undefined, choose)));

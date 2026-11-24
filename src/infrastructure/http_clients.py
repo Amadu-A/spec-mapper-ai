@@ -103,12 +103,33 @@ class HttpExtractionSource:
 
     async def fetch(self, source_job_id: str, progress) -> dict:
         """Различает terminal ошибки, ждёт финал и ровно один раз скачивает result.json."""
+        return await self.fetch_profile(
+            source_job_id,
+            progress,
+            "/api/v1/extractions",
+            lambda payload: validate_source(payload, self.settings.max_items),
+        )
+
+    async def fetch_profile(
+        self,
+        source_job_id: str,
+        progress,
+        path: str,
+        validator,
+        *,
+        wait_seconds: int | None = None,
+        on_complete=None,
+    ) -> dict:
+        """Общий bounded polling финального контракта, с отдельным валидатором профиля."""
         settings = self.settings
         if not settings.extracting_api_key.get_secret_value():
             raise MapperError("upstream_key_missing", "Не задан серверный API-ключ извлечения", 503)
-        url = f"{settings.extracting_base_url.rstrip('/')}/api/v1/extractions/{source_job_id}"
+        url = f"{settings.extracting_base_url.rstrip('/')}{path}/{source_job_id}"
         headers = {"X-API-Key": settings.extracting_api_key.get_secret_value()}
-        deadline = monotonic() + settings.upstream_timeout_seconds
+        wait_seconds = (
+            wait_seconds if wait_seconds is not None else settings.upstream_timeout_seconds
+        )
+        deadline = monotonic() + wait_seconds
 
         async def get_json(path: str, limit: int) -> dict:
             """Ожидает снятия ограничения частоты в пределах общего срока ожидания извлечения."""
@@ -129,14 +150,16 @@ class HttpExtractionSource:
                     await asyncio.sleep(delay)
 
         try:
-            async with asyncio.timeout(settings.upstream_timeout_seconds):
+            async with asyncio.timeout(wait_seconds):
                 while monotonic() < deadline:
                     status = await get_json(url, 1000000)
                     state = status.get("status")
                     if state in {"completed", "completed_with_warnings"}:
                         await progress("fetching")
+                        if on_complete is not None:
+                            await on_complete(state)
                         payload = await get_json(url + "/result.json", settings.max_result_bytes)
-                        return validate_source(payload, settings.max_items)
+                        return validator(payload)
                     if state in {"failed", "cancelled"}:
                         raise MapperError(
                             "upstream_" + state, "Задание извлечения не завершено успешно", 409

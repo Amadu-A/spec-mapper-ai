@@ -6,7 +6,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spec Mapper AI — сопоставление спецификаций</title>
+  <title>Spec Mapper AI — {{ title|default('Сопоставление спецификаций') }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/css/style.css">
   <script type="module" src="/static/js/app.js"></script>
@@ -16,7 +16,7 @@
 <aside class="sidebar" aria-label="Рабочее пространство">
   <a class="sidebar__brand" href="/"><span class="sidebar__logo">{{ icon('layers') }}</span><span>Spec Mapper AI<small>Сопоставление спецификаций<br>с номенклатурой 1С</small></span></a>
   <nav class="sidebar__nav" aria-label="Основное меню">
-    {% for name, label, path, glyph in [('home','Главная','/','home'),('jobs','Задания','/jobs','jobs'),('catalog','Справочник номенклатуры','/catalog','layers'),('settings','Настройки','/settings','settings'),('integrations','API и интеграция','/integrations','code'),('events','Журнал событий','/events','file')] %}
+    {% for name, label, path, glyph in [('home','Главная','/','home'),('jobs','Задания','/jobs','jobs'),('invoices','Сопоставление счетов','/invoices','file'),('catalog','Справочник номенклатуры','/catalog','layers'),('settings','Настройки','/settings','settings'),('integrations','API и интеграция','/integrations','code'),('events','Журнал событий','/events','file')] %}
     <a class="sidebar__link{% if view == name or view == 'mapping' and name == 'jobs' %} sidebar__link--active{% endif %}" href="{{ path }}"{% if view == name %} aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
     {% endfor %}
   </nav>

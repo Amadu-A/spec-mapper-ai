@@ -15,6 +15,7 @@ from sqlalchemy import delete, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from src.domain.embedding import compatible_embedding
+from src.domain.invoices.adapter import invoice_items
 from src.domain.models import (
     TERMINAL,
     CatalogItem,
@@ -30,6 +31,7 @@ from src.infrastructure.database import (
     CatalogIdentityRow,
     CatalogStateRow,
     CatalogVersionRow,
+    InvoiceUploadRow,
     JobRow,
     SpecificationUploadRow,
     VectorCacheRow,
@@ -63,7 +65,9 @@ def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float
     return JobRow(
         id=str(uuid4()),
         owner=owner,
-        idempotency_hash=digest(key),
+        idempotency_hash=digest({"profile": kind, "key": key})
+        if kind == "invoice"
+        else digest(key),
         request_hash=digest({"kind": kind, "payload": payload}),
         kind=kind,
         created_at=now,
@@ -79,6 +83,7 @@ def new_job(owner: str, key: str, payload: dict, kind: str, settings, now: float
             "rows": [],
             **({"specification": payload["specification"]} if "specification" in payload else {}),
             "ingestion": "import-json" if "document" in payload else "extracting",
+            **({"invoice": payload["invoice"]} if "invoice" in payload else {}),
             **({"catalog_sync": payload["catalog_sync"]} if "catalog_sync" in payload else {}),
             **(
                 {"catalog_events": payload["catalog_events"]} if "catalog_events" in payload else {}
@@ -102,9 +107,11 @@ class SqlJobs:
         kind: str = "mapping",
         *,
         pdf: bytes | None = None,
+        uploads: list[bytes] | None = None,
     ) -> dict:
         """Уникальный owner/key защищает и от последовательных, и от конкурентных дублей."""
-        key_hash, request_hash = digest(key), digest({"kind": kind, "payload": payload})
+        key_hash = digest({"profile": kind, "key": key}) if kind == "invoice" else digest(key)
+        request_hash = digest({"kind": kind, "payload": payload})
         try:
             async with self.sessions.begin() as session:
                 row = new_job(owner, key, payload, kind, self.settings, self.clock())
@@ -115,6 +122,13 @@ class SqlJobs:
                 await session.flush()
                 if pdf is not None:
                     session.add(SpecificationUploadRow(job_id=row.id, content=pdf))
+                if uploads is not None:
+                    session.add_all(
+                        [
+                            InvoiceUploadRow(job_id=row.id, file_index=index, content=content)
+                            for index, content in enumerate(uploads)
+                        ]
+                    )
                 if delta is not None:
                     await add_metrics(session, row, delta)
                 else:
@@ -145,6 +159,23 @@ class SqlJobs:
             if row is None:
                 raise MapperError("upload_missing", "Исходный PDF недоступен", 410)
             return row.content
+
+    async def invoice_files(self, job_id: str) -> list[bytes]:
+        """Читает blobs только внутреннему worker; чужие профили и истёкшие jobs запрещены."""
+        job = await self.get(job_id)
+        if job["kind"] != "invoice":
+            raise MapperError("not_found", "Пакет не найден", 404)
+        async with self.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(InvoiceUploadRow)
+                    .where(InvoiceUploadRow.job_id == job_id)
+                    .order_by(InvoiceUploadRow.file_index)
+                )
+            )
+            if len(rows) != len(job["data"]["invoice"].get("files", [])):
+                raise MapperError("upload_missing", "Исходный пакет недоступен", 410)
+            return [row.content for row in rows]
 
     def _check(self, row: JobRow | None, owner: str | None) -> None:
         """Сначала скрывает чужие задания, затем запрещает доступ после TTL до
@@ -311,7 +342,7 @@ class SqlJobs:
                 )
                 else "complete"
             )
-            data, delta = metric_delta(row, data, state)
+            data, delta = metric_delta(row, data, state) if row.kind == "mapping" else (data, None)
             changed = await session.execute(
                 update(JobRow)
                 .where(
@@ -324,7 +355,8 @@ class SqlJobs:
             )
             if changed.rowcount != 1:
                 raise MapperError("revision_conflict", "Результат изменён другим запросом", 409)
-            await add_metrics(session, row, delta)
+            if delta is not None:
+                await add_metrics(session, row, delta)
         return await self.get(job_id, owner)
 
     async def cleanup(self) -> None:
@@ -340,6 +372,13 @@ class SqlJobs:
             await session.execute(
                 delete(SpecificationUploadRow).where(
                     SpecificationUploadRow.job_id.in_(
+                        select(JobRow.id).where(JobRow.expires_at <= self.clock())
+                    )
+                )
+            )
+            await session.execute(
+                delete(InvoiceUploadRow).where(
+                    InvoiceUploadRow.job_id.in_(
                         select(JobRow.id).where(JobRow.expires_at <= self.clock())
                     )
                 )
@@ -365,6 +404,7 @@ class SqlJobs:
             ensure_approvable(row.state, row.data["rows"])
             approved_at = self.clock()
             approval = {
+                **(snapshot.get("approval", {}) if row.kind == "invoice" else {}),
                 "approved_at": approved_at,
                 "approved_revision": revision,
                 "owner": owner,
@@ -377,14 +417,21 @@ class SqlJobs:
                 "approved_at": approved_at,
                 "approved_revision": revision,
             }
-            for item in snapshot["items"]:
+            exported_items = (
+                (item for _, _, item, _ in invoice_items(snapshot))
+                if row.kind == "invoice"
+                else snapshot["items"]
+            )
+            for item in exported_items:
                 item["matching"]["approved"] = True
             data = {
                 **deepcopy(row.data),
                 "approval": approval,
                 "rows": confirm_rows(row.data["rows"]),
             }
-            data, delta = metric_delta(row, data, "approved")
+            data, delta = (
+                metric_delta(row, data, "approved") if row.kind == "mapping" else (data, None)
+            )
             changed = await session.execute(
                 update(JobRow)
                 .where(
@@ -407,7 +454,8 @@ class SqlJobs:
                     snapshot=snapshot,
                 )
             )
-            await add_metrics(session, row, delta)
+            if delta is not None:
+                await add_metrics(session, row, delta)
         return await self.get(job_id, owner)
 
     async def approved(self, job_id: str, owner: str) -> dict:

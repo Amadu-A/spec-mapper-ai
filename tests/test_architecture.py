@@ -10,7 +10,7 @@ from pathlib import Path
 def test_dependency_direction():
     """Domain/application не зависят от HTTP, ORM, конкретных клиентов и infrastructure."""
     for directory in ("domain", "application"):
-        for path in (Path("src") / directory).glob("*.py"):
+        for path in (Path("src") / directory).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

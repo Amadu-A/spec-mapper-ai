@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: int = Field(900, ge=1, le=3300)
     http_timeout_seconds: int = Field(30, ge=1, le=120)
     max_pdf_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    invoice_max_files: int = Field(10, ge=1, le=10)
+    invoice_max_file_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    invoice_max_batch_bytes: int = Field(100 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    invoice_max_selected_pages: int = Field(100, ge=1, le=100)
+    invoice_max_items: int = Field(20000, ge=1, le=20000)
+    invoice_upstream_timeout_seconds: int = Field(3300, ge=1, le=3300)
     max_result_bytes: int = Field(15000000, ge=1024, le=50000000)
     max_xml_bytes: int = Field(200000000, ge=1024)
     max_items: int = Field(10000, ge=1, le=50000)
@@ -124,6 +130,8 @@ class Settings(BaseSettings):
         """Запрещает молчаливое использование неизвестной политики дубликатов и порта upstream."""
         if self.duplicate_code_policy not in {"reject", "quarantine"}:
             raise ValueError("duplicate_code_policy: reject или quarantine")
+        if self.invoice_max_file_bytes > self.invoice_max_batch_bytes:
+            raise ValueError("Размер invoice-файла не может превышать лимит пакета")
         if self.onec_catalog_response_format not in {"json", "xml"}:
             raise ValueError("ONEC_CATALOG_RESPONSE_FORMAT: json или xml")
         webhook = self.onec_catalog_webhook_key.get_secret_value()

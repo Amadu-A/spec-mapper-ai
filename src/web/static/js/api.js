@@ -11,7 +11,7 @@ export class ApiError extends Error {
 export async function api(path, options = {}) {
   /** Выполняет запрос с HttpOnly cookie; секретные API-ключи в frontend отсутствуют. */
   const headers = new Headers(options.headers);
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  if (options.body !== undefined && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
   if (csrf) headers.set("X-CSRF-Token", csrf);
   if (operatorCsrf) headers.set("X-Operator-CSRF", operatorCsrf);
   let response;

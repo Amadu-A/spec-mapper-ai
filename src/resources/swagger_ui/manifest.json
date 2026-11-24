@@ -1,0 +1,10 @@
+{
+  "version": "v5.36.0",
+  "source": "https://github.com/swagger-api/swagger-ui/tree/v5.36.0",
+  "files": {
+    "swagger-ui-bundle.js": "b164c5a22535e40dae08c00271674a67e437ec195098c55fcedf8ffac7ac3c88",
+    "swagger-ui.css": "7eb9f5a125e4bc9b3f0b71869b66d1a3d7c501f972f53d44ef91c2ae6c5bda5e",
+    "NOTICE.txt": "37eb6e7e59aed57b2c1acf076574b818ea07b74265717e0bd67b59e0baf9abbb",
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  }
+}

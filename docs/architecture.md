@@ -1,6 +1,24 @@
 <!-- docs/architecture.md -->
 # Архитектура
 
+## Независимый профиль счетов (этап 02)
+
+Invoice добавлен внутри существующего монолита: `domain/invoices` содержит полный
+versioned DTO и lossless адаптер, `application/invoices` — два входа и financial guard,
+`infrastructure/invoices` — структурную проверку PDF/изображений и HTTP-клиент 8083.
+Отдельные API/UI и invoice-отчёт используют те же `MappingUseCases`, `JobProcessor`,
+батчевый поиск/реранкер, `SqlJobs`, outbox, leases, CAS, owner, TTL и immutable approval.
+Умолчания общего механизма спецификаций не изменены. Нового сервиса или worker loop нет.
+
+`kind=invoice` отделяет задания, пространство идемпотентности и маршруты от mapping.
+Миграция 0006 только добавляет `invoice_uploads(job_id, file_index, content)`;
+все blobs, метаданные job и outbox сохраняются одной транзакцией до 202.
+Worker фиксирует upstream ID и конечный source, затем использует общий matching pipeline.
+Платежи не отправляются в embedding, услуги/неизвестные виды требуют проверки.
+Финансы остаются исходными; отдельное согласие на предупреждения не исправляет validation.
+Оба профиля удерживают используемую версию каталога до TTL. Подробности —
+[контракт](INVOICE_API.md) и [отчёт](INVOICE_STAGE_02_REPORT.md).
+
 `domain ← application ← infrastructure`; HTTP и worker — delivery. `bootstrap.py`
 собирает адаптеры и use-cases. Бизнес-подбор не находится в роутерах или JS.
 Порты описаны через Protocol в `application/ports.py`. SQLAlchemy разрешён только
