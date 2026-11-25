@@ -24,7 +24,16 @@ class SpecificationStatus(BaseModel):
     """Состояние одного процесса без ID, kind и внутренних маршрутов извлечения."""
 
     job_id: UUID
-    status: Literal["queued", "extracting", "matching", "awaiting_review", "approved", "failed"]
+    status: Literal[
+        "queued",
+        "extracting",
+        "matching",
+        "awaiting_review",
+        "approved",
+        "failed",
+        "cancelling",
+        "cancelled",
+    ]
     created_at: float
     expires_at: float
     revision: int
@@ -37,6 +46,8 @@ class SpecificationStatus(BaseModel):
     counts: dict[str, int]
     catalog_version: str | None
     links: dict[str, str]
+    reused: bool = False
+    progress: dict | None = None
 
 
 class SpecificationRows(SpecificationStatus):

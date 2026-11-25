@@ -14,6 +14,7 @@ from time import time
 import httpx
 from pydantic import ValidationError
 
+from src.application.delivery import dispatch_once
 from src.bootstrap import build_container
 from src.config import Settings
 from src.domain.embedding import compatible_embedding
@@ -269,8 +270,7 @@ async def _enqueue_local(container, active, identity, status):
 
 async def _wait_catalog(container, job, wait):
     """Публикует существующий outbox и показывает владельцу безопасные журналы прогресса."""
-    await container.broker.publish(job["id"])
-    await container.jobs.dispatched(job["id"])
+    await dispatch_once(container.jobs, container.broker)
     print("Задание импорта: " + job["id"])
     last_progress = None
     if wait:
@@ -318,6 +318,22 @@ async def operator_ticket() -> None:
         await container.close()
 
 
+async def delivery_command(command: str, identifiers: list[str]) -> None:
+    """Диагностика или явно ограниченное recovery своей очереди без purge/get/чужих jobs."""
+    from uuid import UUID
+
+    container = build_container(Settings())
+    try:
+        value = (
+            await container.jobs.delivery_diagnostics()
+            if command == "delivery-status"
+            else await container.jobs.reconcile_delivery([str(UUID(item)) for item in identifiers])
+        )
+        print(json.dumps(value, ensure_ascii=False))
+    finally:
+        await container.close()
+
+
 def main() -> None:
     """Выполняет одну операторскую операцию и выдаёт только безопасную предметную диагностику."""
     parser = argparse.ArgumentParser(description="Операции spec-mapper-ai")
@@ -331,6 +347,8 @@ def main() -> None:
             "check-live",
             "shared-health",
             "operator-ticket",
+            "delivery-status",
+            "delivery-reconcile",
         ],
     )
     parser.add_argument("--wait", action="store_true", help="Дождаться завершения импорта")
@@ -338,6 +356,12 @@ def main() -> None:
         "--configured-source",
         action="store_true",
         help="Bootstrap из сохранённого источника вместо обязательного XML",
+    )
+    parser.add_argument(
+        "--job-id",
+        action="append",
+        default=[],
+        help="Явный UUID для delivery-reconcile; не более 10",
     )
     args = parser.parse_args()
     try:
@@ -353,6 +377,8 @@ def main() -> None:
             asyncio.run(shared_health())
         elif args.command == "operator-ticket":
             asyncio.run(operator_ticket())
+        elif args.command in {"delivery-status", "delivery-reconcile"}:
+            asyncio.run(delivery_command(args.command, args.job_id))
         else:
             asyncio.run(enqueue_catalog(args.wait, args.configured_source))
     except MapperError as exc:

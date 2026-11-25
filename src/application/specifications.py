@@ -82,7 +82,7 @@ def specification_status(job: dict) -> dict:
     state = job["state"]
     if state in {"complete", "ready_for_review"}:
         state = "awaiting_review"
-    elif state not in {"queued", "failed", "approved"}:
+    elif state not in {"queued", "failed", "approved", "cancelling", "cancelled"}:
         state = "matching" if job["data"].get("source") else "extracting"
     root = f"/api/v1/specifications/{job['id']}"
     return {

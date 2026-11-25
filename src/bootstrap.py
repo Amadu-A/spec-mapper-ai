@@ -15,6 +15,7 @@ from src.application.catalog_events import CatalogEvents
 from src.application.catalog_management import CatalogManagement
 from src.application.invoice_reports import invoice_export
 from src.application.invoices.service import Invoices
+from src.application.lifecycle import JobLifecycle
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
 from src.application.specifications import Specifications
@@ -57,6 +58,7 @@ class Container:
     catalog_events: CatalogEvents
     specifications: Specifications
     invoices: Invoices
+    lifecycle: JobLifecycle
 
     async def ready(self) -> dict:
         """Проверяет реальные зависимости; недоступный shared endpoint никогда не
@@ -190,4 +192,5 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
             InvoiceUploadInspector(),
             settings,
         ),
+        JobLifecycle(jobs),
     )

@@ -8,6 +8,7 @@ import logging
 from time import time
 from uuid import UUID
 
+from src.application.delivery import dispatch_once
 from src.bootstrap import build_container
 from src.config import Settings
 from src.observability import configure_logging
@@ -30,9 +31,7 @@ async def maintenance(container) -> None:
                     await container.catalog_events.tick()
                 except Exception:
                     logging.getLogger(__name__).warning("catalog_events_retry")
-            for job_id in await container.jobs.pending():
-                await container.broker.publish(job_id)
-                await container.jobs.dispatched(job_id)
+            await dispatch_once(container.jobs, container.broker)
             if time() - last_cleanup >= 30:
                 await container.jobs.cleanup()
                 last_cleanup = time()
@@ -70,7 +69,19 @@ async def run() -> None:
                 except (ValueError, UnicodeError):
                     logging.getLogger(__name__).warning("invalid_broker_message")
                     return
-                await container.processor.process(job_id)
+                generation = (message.headers or {}).get("mapper-generation")
+                if generation is not None and (type(generation) is not int or generation < 1):
+                    logging.getLogger(__name__).warning("invalid_delivery_generation")
+                    return
+                outcome = await container.processor.process(job_id, delivery_generation=generation)
+            logging.getLogger(__name__).info(
+                "delivery_ack_noop" if outcome in {"noop", "fenced"} else "delivery_ack",
+                extra={
+                    "job_id": job_id,
+                    "generation": generation,
+                    "redelivered": message.redelivered,
+                },
+            )
         finally:
             semaphore.release()
 

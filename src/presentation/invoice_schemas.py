@@ -29,7 +29,16 @@ class InvoiceStatus(BaseModel):
     """Безопасный статус одного внешнего задания на 8087."""
 
     job_id: UUID
-    status: Literal["queued", "extracting", "matching", "awaiting_review", "approved", "failed"]
+    status: Literal[
+        "queued",
+        "extracting",
+        "matching",
+        "awaiting_review",
+        "approved",
+        "failed",
+        "cancelling",
+        "cancelled",
+    ]
     revision: int
     created_at: float
     expires_at: float
@@ -46,6 +55,8 @@ class InvoiceStatus(BaseModel):
     counts: dict[str, int]
     catalog_version: str | None
     links: dict[str, str]
+    reused: bool = False
+    progress: dict | None = None
 
 
 class FinancialWarning(BaseModel):

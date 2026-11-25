@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from time import time
 from uuid import UUID
 
 from src.application.ports import CatalogRepository, JobRepository
 from src.application.reports import export_json
+from src.domain.lifecycle import snapshot as lifecycle_snapshot
 from src.domain.models import (
     MapperError,
     confirm_rows,
@@ -133,6 +135,8 @@ def public_status(job: dict) -> dict:
     job_id = job["id"]
     return {
         "job_id": job_id,
+        "reused": job.get("reused", False),
+        "progress": lifecycle_snapshot(job, time()) if job["kind"] == "mapping" else None,
         "kind": job["kind"],
         "status": job["state"],
         "stage": job["stage"],

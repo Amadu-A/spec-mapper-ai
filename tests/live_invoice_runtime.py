@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from pydantic import Field
-from sqlalchemy import insert, inspect, select, text
+from sqlalchemy import MetaData, Table, insert, inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.bootstrap import build_container
@@ -80,7 +80,7 @@ def api():
 
 
 async def migrate() -> None:
-    """Проверяет PostgreSQL 0005→0006 на синтетическом старом job/PDF/approval в своей схеме."""
+    """Проверяет additive миграции 0005→0007 и сохранность старого job/PDF/approval."""
     from test_dashboard_migrations import upgrade
 
     settings = checked_settings()
@@ -94,8 +94,11 @@ async def migrate() -> None:
         async with engine.begin() as connection:
             for revision in ["0001", "0002", "0003", "0004", "0005"]:
                 await connection.run_sync(upgrade, revision)
+            legacy_jobs = await connection.run_sync(
+                lambda conn: Table("mapping_jobs", MetaData(), autoload_with=conn)
+            )
             await connection.execute(
-                insert(JobRow).values(
+                insert(legacy_jobs).values(
                     id=identifier,
                     owner="qa-legacy",
                     kind="mapping",
@@ -124,6 +127,7 @@ async def migrate() -> None:
                 )
             )
             await connection.run_sync(upgrade, "0006")
+            await connection.run_sync(upgrade, "0007")
             assert await connection.scalar(select(ApprovalRow.snapshot)) == snapshot
             assert (
                 await connection.scalar(select(SpecificationUploadRow.content)) == b"%PDF-preserved"
@@ -131,8 +135,9 @@ async def migrate() -> None:
             assert "invoice_uploads" in await connection.run_sync(
                 lambda conn: inspect(conn).get_table_names()
             )
+            assert await connection.scalar(select(JobRow.delivery_state)) == "closed"
         print(
-            json.dumps({"postgresql_migration": "0005_to_0006", "legacy_data_preserved": True}),
+            json.dumps({"postgresql_migration": "0005_to_0007", "legacy_data_preserved": True}),
             flush=True,
         )
     finally:

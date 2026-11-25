@@ -39,6 +39,8 @@ async def bounded_json(
 class HttpExtractionSource:
     """Опрос spec-extracting-ai по серверному API-ключу; чужие cookie не используются."""
 
+    profile_path = "/api/v1/extractions"
+
     def __init__(self, client: httpx.AsyncClient, settings) -> None:
         """Принимает общий ограниченный HTTP pool и типизированные параметры upstream."""
         self.client, self.settings = client, settings
@@ -92,6 +94,44 @@ class HttpExtractionSource:
         return await self._submit(
             "/api/v1/documents", files={"file": (filename, content, "application/pdf")}
         )
+
+    async def metadata_request(self, method: str, job_id: str) -> dict:
+        """Общий status/cancel контракт Stage 03A; не экспортирует upstream error body."""
+        key = self.settings.extracting_api_key.get_secret_value()
+        if not key:
+            raise MapperError("upstream_key_missing", "Не задан серверный ключ извлечения", 503)
+        path = self.profile_path + "/" + job_id + ("/cancel" if method == "POST" else "")
+        try:
+            value = await bounded_json(
+                self.client,
+                method,
+                self.settings.extracting_base_url.rstrip("/") + path,
+                1000000,
+                headers={"X-API-Key": key},
+            )
+            if value.get("status") not in {
+                "queued",
+                "running",
+                "completed",
+                "completed_with_warnings",
+                "failed",
+                "cancelled",
+            }:
+                raise MapperError("upstream_state", "Неизвестный статус извлечения", 502)
+            return value
+        except httpx.HTTPStatusError as exc:
+            names = {404: "not_found", 410: "expired", 401: "unauthorized", 403: "forbidden"}
+            raise MapperError(
+                "upstream_" + names.get(exc.response.status_code, "http_error"),
+                "Запрос управления извлечением отклонён",
+                502,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise MapperError("upstream_timeout", "Сервис извлечения недоступен", 503) from exc
+
+    async def cancel(self, job_id: str) -> dict:
+        """Идемпотентно запрашивает отмену уже известного managed upstream UUID."""
+        return await self.metadata_request("POST", job_id)
 
     async def start(self, document_id: str, pages: str, project_code: str, key: str) -> str:
         """Запускает извлечение идемпотентно по ID общего задания после сохранения документа."""
@@ -153,6 +193,7 @@ class HttpExtractionSource:
             async with asyncio.timeout(wait_seconds):
                 while monotonic() < deadline:
                     status = await get_json(url, 1000000)
+                    await progress("polling", upstream_progress=status)
                     state = status.get("status")
                     if state in {"completed", "completed_with_warnings"}:
                         await progress("fetching")
@@ -166,7 +207,6 @@ class HttpExtractionSource:
                         )
                     if state not in {"queued", "running"}:
                         raise MapperError("upstream_state", "Неизвестный статус извлечения", 502)
-                    await progress("polling")
                     await asyncio.sleep(settings.poll_seconds)
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code

@@ -131,8 +131,10 @@ async def test_upstream_extended_polling_contract(settings, extended_source):
             else {"status": "completed_with_warnings"},
         )
 
-    async def progress(stage):
+    async def progress(stage, **details):
         """Принимает фактический fetching без публикации partial."""
+        if details:
+            assert details["upstream_progress"]["status"] == "completed_with_warnings"
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         payload = await HttpExtractionSource(client, settings).fetch(str(uuid4()), progress)

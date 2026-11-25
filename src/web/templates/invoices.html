@@ -4,19 +4,21 @@
 {% block content %}
 <section class="invoice-workspace" aria-labelledby="invoice-title">
   <div class="heading"><div><h1 id="invoice-title">Сопоставление счетов</h1><p>Документы поставщиков · исходные финансы сохраняются без изменений</p></div><nav class="heading__actions" aria-label="Профиль сопоставления"><a class="button" href="/mapping">Спецификации</a><a class="button button--primary" href="/invoices" aria-current="page">Счета</a></nav></div>
-  <section class="workspace workspace--padded" aria-labelledby="invoice-upload-title">
-    <h2 id="invoice-upload-title">Загрузить счета</h2><p>PDF, JPEG, PNG · до 10 файлов, 50 MiB каждый, 100 MiB на пакет и 100 выбранных страниц. Извлечение выполняет spec-extracting-ai.</p>
+  {% include "components/job_lifecycle.html" %}
+  <details class="workspace workspace--padded job-input-panel" data-invoice-input-panel open><summary>Исходные документы · файлы и диапазоны страниц</summary><section aria-labelledby="invoice-upload-title">
+    <h2 id="invoice-upload-title">Загрузить счета</h2><p>PDF, JPEG, PNG · до 10 файлов, 50 MiB каждый, 100 MiB на пакет и 100 выбранных страниц.</p>
     <form class="invoice-upload" data-invoice-upload>
       <label for="invoice-files">Исходные документы</label><input class="input" type="file" id="invoice-files" multiple accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg" data-invoice-files required disabled>
-      <div class="invoice-upload__files" data-invoice-file-list></div><button class="button button--primary" type="submit" data-invoice-submit disabled>Извлечь и сопоставить</button>
+      <details class="invoice-upload__ranges"><summary>Файлы и физические страницы</summary><div class="invoice-upload__files" data-invoice-file-list></div></details><button class="button button--primary" type="submit" data-invoice-submit disabled>Извлечь и сопоставить</button>
     </form>
     <div class="source__import"><label for="invoice-json">Или готовый JSON invoice_extraction.v1</label><input type="file" id="invoice-json" accept="application/json,.json" data-invoice-import disabled></div>
     <p role="status" aria-live="polite" data-invoice-status>Подготовка защищённой сессии…</p><p class="match-table__meta" data-invoice-job></p>
   </section>
-  <div class="metrics invoice-metrics" aria-label="Итоги счетов">
-    {% for code, label in [('file_count','Файлов'),('document_count','Документов'),('total','Позиций'),('matched','Подобрано'),('unresolved_count','Требует проверки'),('financial_warning_count','Финансовые предупреждения')] %}<article class="metric"><h2>{{ label }}</h2><strong data-invoice-count="{{ code }}">0</strong></article>{% endfor %}
+  </details>
+  <div class="metrics invoice-metrics job-workspace-metrics" aria-label="Итоги счетов">
+    {% for code, label in [('file_count','Файлов'),('document_count','Документов'),('total','Позиций'),('matched','Подобрано'),('unresolved_count','Требует проверки'),('financial_warning_count','Финансовые предупреждения')] %}<article class="metric"><h2>{{ label }}</h2><strong data-invoice-count="{{ code }}">—</strong></article>{% endfor %}
   </div>
-  <section class="workspace workspace--padded invoice-warnings" aria-labelledby="invoice-risk-title">
+  <section class="workspace workspace--padded invoice-warnings job-review" data-invoice-review-panel hidden aria-labelledby="invoice-risk-title">
     <h2 id="invoice-risk-title">Финансовая проверка</h2><p>Подтверждение разрешает обработать документ с предупреждением. Исходные суммы, НДС и статус проверки не исправляются.</p>
     <div data-invoice-warnings>Предупреждения появятся после обработки.</div><p role="status" data-invoice-approval>Утверждение фиксирует все текущие соответствия и пустые строки.</p><button class="button button--primary" type="button" data-invoice-approve disabled>Утвердить результат</button>
     <div class="heading__actions invoice-workspace__exports" aria-label="Экспорт счетов"><a class="button" data-invoice-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-invoice-export="draft.json" aria-disabled="true">Черновой JSON</a><a class="button" data-invoice-export="result.json" aria-disabled="true">Утверждённый JSON</a><a class="button" data-invoice-export="result.xlsx" aria-disabled="true">Excel</a></div>

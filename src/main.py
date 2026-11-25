@@ -19,6 +19,7 @@ from src.observability import configure_logging
 from src.presentation.catalog_events import router as catalog_events_router
 from src.presentation.dashboard_routes import router as dashboard_router
 from src.presentation.invoices import router as invoices_router
+from src.presentation.lifecycle import router as lifecycle_router
 from src.presentation.middleware import InvoiceUploadError, LimitsMiddleware
 from src.presentation.routes import router
 from src.presentation.security import COOKIE, new_session
@@ -55,6 +56,7 @@ def create_app(container: Container | None = None) -> FastAPI:
         ),
     )
     app.state.container = container
+    app.state.lifecycle_streams = {}
     app.add_middleware(
         LimitsMiddleware,
         max_bytes=container.settings.max_result_bytes,
@@ -75,6 +77,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(specifications_router)
     app.include_router(invoices_router)
+    app.include_router(lifecycle_router)
     app.include_router(dashboard_router)
     app.include_router(catalog_events_router)
 

@@ -34,6 +34,10 @@ class InvoiceExtraction(Protocol):
         """Дожидается только полного invoice_extraction.v1, сохраняя предупреждение финала."""
         ...
 
+    async def cancel(self, job_id: str) -> dict:
+        """Запрашивает отмену уже известного managed job без создания нового извлечения."""
+        ...
+
     async def preview(self, job_id: str, file_index: int, page: int, width: int) -> bytes:
         """Получает ограниченный PNG через известный маршрут с серверным API-ключом."""
         ...

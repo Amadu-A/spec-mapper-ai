@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import re
 from collections import Counter
+from time import time
 
 from src.application.invoices.ports import InvoiceExtraction, Upload, UploadInspector
 from src.application.mappings import MappingUseCases
@@ -14,6 +15,7 @@ from src.application.ports import JobRepository
 from src.domain.invoices.adapter import invoice_items, matchable
 from src.domain.invoices.models import validate_invoice
 from src.domain.invoices.warnings import approval_context, financial_warnings, selection_warnings
+from src.domain.lifecycle import snapshot as lifecycle_snapshot
 from src.domain.models import MapperError
 from src.observability import timed
 
@@ -226,13 +228,15 @@ def invoice_status(job: dict) -> dict:
     data, state = job["data"], job["state"]
     if state in {"complete", "ready_for_review"}:
         state = "awaiting_review"
-    elif state not in {"queued", "approved", "failed"}:
+    elif state not in {"queued", "approved", "failed", "cancelling", "cancelled"}:
         state = "matching" if data.get("source") else "extracting"
     source, rows = data.get("source"), data["rows"]
     root = f"/api/v1/invoices/{job['id']}"
     summary = source["summary"] if source else {}
     return {
         "job_id": job["id"],
+        "reused": job.get("reused", False),
+        "progress": lifecycle_snapshot(job, time()),
         "status": state,
         "revision": job["revision"],
         "created_at": job["created_at"],

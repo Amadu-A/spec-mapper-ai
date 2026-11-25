@@ -1,6 +1,6 @@
 // src/web/static/js/invoice-state.js
 /** Отображение invoice API; исходные финансы и решения backend не пересчитываются. */
-export const invoiceStages = {queued:"В очереди",extracting:"Извлечение счетов",matching:"Сопоставление",awaiting_review:"Готово к проверке",approved:"Результат утверждён",failed:"Ошибка обработки"};
+export const invoiceStages = {queued:"В очереди",extracting:"Извлечение счетов",matching:"Сопоставление",awaiting_review:"Готово к проверке",approved:"Результат утверждён",failed:"Ошибка обработки",cancelling:"Отмена запрошена",cancelled:"Отменено"};
 export const invoiceLabels = {matched:"Подобрано",review:"Проверить",not_found:"Не найдено",manual:"Вручную",not_applicable:"Не номенклатура"};
 export const warningLabels = {
   financial_failed:"Финансовая проверка выявила расхождение",financial_partially_checked:"Финансы проверены частично",

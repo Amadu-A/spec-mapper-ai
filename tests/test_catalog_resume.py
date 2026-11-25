@@ -17,10 +17,10 @@ async def test_startup_retries_failed_import_and_repairs_missing_index(system, m
     container, _, _, catalog_source, _ = system
     published = []
 
-    async def publish(job_id):
+    async def publish(job_id, generation=None):
         """Доставляет настоящее durable задание синхронно вместо RabbitMQ."""
         published.append(job_id)
-        await container.processor.process(job_id)
+        await container.processor.process(job_id, delivery_generation=generation)
 
     async def close():
         """Закрывает только тестовый broker без внешнего соединения."""

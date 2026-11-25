@@ -12,7 +12,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from openpyxl import load_workbook
-from sqlalchemy import create_engine, func, insert, inspect, select
+from sqlalchemy import MetaData, Table, create_engine, func, insert, inspect, select
 from test_dashboard_migrations import upgrade
 from test_invoices import (
     AUTH,
@@ -124,8 +124,9 @@ def test_additive_invoice_migration_preserves_specifications():
     with engine.begin() as connection:
         for revision in ["0001", "0002", "0003", "0004", "0005"]:
             upgrade(connection, revision)
+        legacy_jobs = Table("mapping_jobs", MetaData(), autoload_with=connection)
         connection.execute(
-            insert(JobRow).values(
+            insert(legacy_jobs).values(
                 id=identifier,
                 owner="legacy",
                 idempotency_hash="a" * 64,

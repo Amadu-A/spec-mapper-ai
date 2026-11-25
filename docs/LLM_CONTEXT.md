@@ -5,6 +5,11 @@
 Код — локальный FastAPI сервис; публикация Sites и облачные модели не используются.
 Без команды владельца не выполнять commit/push и не менять shared stack.
 
+Stage 03B: [жизненный цикл](JOB_LIFECYCLE.md), [исходное ТЗ](STAGE_03B_JOB_LIFECYCLE_UI.md),
+[отчёт/безопасный выпуск](STAGE_03B_REPORT.md). Не возвращать timer replay published
+jobs; durable receipt и lease recovery обязательны. Откат старого worker после
+использования отмены/алиасов не считать безопасным без проверки совместимости.
+
 Обязательные инструкции по профилю задачи:
 
 - Backend, Settings, тесты: [Engineering](reference/ENGINEERING_GUIDELINES.md).

@@ -17,8 +17,8 @@ function notify(message,error=false){
 }
 try{
   await initializeSession();const session=await initializeOperator(),page=document.body.dataset.pageKind;
-  if(page==='mapping'){const open=createMapping(notify),job=new URLSearchParams(location.search).get('job');if(job&&validUuid(job))await open(job);}
-  if(page==='invoices'){const open=createInvoices(notify),job=new URLSearchParams(location.search).get('job');if(job&&validUuid(job))await open(job);}
+  if(page==='mapping'){const open=createMapping(notify),job=new URLSearchParams(location.search).get('job');if(open.restore)await open.restore();else if(job&&validUuid(job))await open(job);}
+  if(page==='invoices'){const open=createInvoices(notify),job=new URLSearchParams(location.search).get('job');if(open.restore)await open.restore();else if(job&&validUuid(job))await open(job);}
   const sync=createSync(session.operator,notify),jobs=createJobs(session.operator,notify);createEvents(session.operator,notify);createOperator(session,notify);
   const catalogEvents=createCatalogEvents(session.operator,notify);
   if(page==='catalog')await createCatalog(notify);

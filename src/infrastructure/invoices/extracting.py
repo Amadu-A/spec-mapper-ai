@@ -13,6 +13,8 @@ from src.infrastructure.http_clients import HttpExtractionSource
 class HttpInvoiceExtraction(HttpExtractionSource):
     """Переиспользует транспорт спецификаций, но никогда не их source-валидатор."""
 
+    profile_path = "/api/v1/invoice-extractions"
+
     async def submit(self, metadata: dict, files: list[bytes], key: str) -> str:
         """Передаёт тот же пакет и стабильный key после restart/потерянного ответа."""
         return await self._submit(

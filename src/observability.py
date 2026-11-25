@@ -21,7 +21,19 @@ class JsonFormatter(logging.Formatter):
             "timestamp": self.formatTime(record),
             "service": "spec-mapper",
         }
-        for name in ("operation", "duration_ms", "status", "job_id", "error_code", "count"):
+        for name in (
+            "operation",
+            "duration_ms",
+            "status",
+            "job_id",
+            "error_code",
+            "count",
+            "generation",
+            "attempt",
+            "redelivered",
+            "reason",
+            "profile",
+        ):
             if hasattr(record, name):
                 fields[name] = getattr(record, name)
         return json.dumps(fields, ensure_ascii=False)

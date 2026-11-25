@@ -1,25 +1,30 @@
 <!-- src/web/templates/mapping.html -->
 {% extends "base.html" %}
-{# Рабочая таблица, история сессии и каталог; все данные загружаются через авторизованный API. #}
+{# Общий lifecycle и прежняя таблица спецификаций; profile-specific API выбирается по snapshot. #}
 {% block content %}
 <section data-view="mapping">
-  <div class="heading"><div><h1>Сопоставление спецификации</h1><p>Подбор номенклатуры 1С для каждой позиции с возможностью ручной корректировки</p></div><div class="heading__actions"><a class="button" data-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-export="result.json" aria-disabled="true">↓ Предварительный JSON</a><a class="button" data-export="result.xlsx" aria-disabled="true">↓ Excel</a><a class="button button--primary" data-export="approved.json" aria-disabled="true">↓ Утверждённый JSON</a></div></div>
-  <section class="workspace workspace--padded"><p data-approval-status role="status">«Утвердить результат» подтвердит все текущие соответствия и пустые строки. Ошибочный выбор можно убрать крестиком.</p><button class="button button--primary" type="button" data-approve disabled>Утвердить результат</button></section>
-  <section class="source" aria-labelledby="source-title">
-    <div><h2 id="source-title">Источник: spec-extracting-ai</h2><p class="source__status" data-job-status>Подготовка защищённой сессии…</p><p class="source__file" data-source-file></p></div>
-    <form class="source__form" data-submit>
-      <label class="page__sr-only" for="source-id">UUID задания извлечения</label>
-      <input class="input" id="source-id" name="source_job_id" placeholder="UUID задания извлечения" required autocomplete="off" disabled>
-      <button class="button button--primary" type="submit" disabled>Сопоставить</button>
+  <div class="heading"><div><h1>Сопоставление спецификаций</h1><p>Подбор номенклатуры 1С и проверка исходных позиций</p></div><nav class="heading__actions" aria-label="Профиль сопоставления"><a class="button button--primary" href="/mapping" aria-current="page">Спецификации</a><a class="button" href="/invoices">Счета</a></nav></div>
+  {% include "components/job_lifecycle.html" %}
+  <details class="workspace workspace--padded job-input-panel" data-mapping-input-panel open><summary>Новая спецификация · PDF, готовый JSON или UUID извлечения</summary>
+    <form class="job-input" data-specification-upload>
+      <label class="page__sr-only" for="spec-pdf">PDF спецификации</label><input class="input" type="file" id="spec-pdf" name="file" accept="application/pdf,.pdf" required disabled>
+      <label class="page__sr-only" for="spec-pages">Физические страницы</label><input class="input" type="text" id="spec-pages" name="pages" placeholder="Страницы: 1-3,5" maxlength="2000" required disabled>
+      <label class="page__sr-only" for="spec-project">Шифр проекта</label><input class="input" type="text" id="spec-project" name="project_code" placeholder="Шифр проекта" maxlength="200" required disabled>
+      <button class="button button--primary" type="submit" disabled>Извлечь и сопоставить</button>
     </form>
-    <div class="source__import"><label class="button" for="json-file">↑ Импорт готового JSON</label><input class="page__file" id="json-file" type="file" accept="application/json,.json" data-import disabled><span data-job-id></span></div>
-  </section>
-  <div class="metrics" aria-label="Итоги сопоставления">
-    <article class="metric"><h2>Всего позиций</h2><strong data-count="total">0</strong><span>Из исходного JSON</span></article>
-    <article class="metric metric--green"><h2>Подобрано</h2><strong data-count="matched">0</strong><span>Включая ручной выбор</span></article>
-    <article class="metric metric--yellow"><h2>Требует проверки</h2><strong data-count="review">0</strong><span>Неоднозначные кандидаты</span></article>
-    <article class="metric metric--red"><h2>Без соответствия</h2><strong data-count="not_found">0</strong><span>Доступен ручной поиск</span></article>
+    <section class="source source--compact" aria-labelledby="source-title">
+      <div><h2 id="source-title">Готовое извлечение</h2><p class="source__status" data-job-status>Подготовка сессии…</p><p class="source__file" data-source-file></p></div>
+      <form class="source__form" data-submit><label class="page__sr-only" for="source-id">UUID задания извлечения</label><input class="input" id="source-id" name="source_job_id" placeholder="UUID задания извлечения" required autocomplete="off" disabled><button class="button button--primary" type="submit" disabled>Сопоставить</button></form>
+      <div class="source__import"><label class="button" for="json-file">Импорт готового JSON</label><input class="page__file" id="json-file" type="file" accept="application/json,.json" data-import disabled><span data-job-id></span></div>
+    </section>
+  </details>
+  <div class="metrics job-workspace-metrics job-workspace-metrics--specifications" aria-label="Итоги сопоставления">
+    <article class="metric"><h2>Всего позиций</h2><strong data-count="total">—</strong></article>
+    <article class="metric metric--green"><h2>Подобрано</h2><strong data-count="matched">—</strong></article>
+    <article class="metric metric--yellow"><h2>Требует проверки</h2><strong data-count="review">—</strong></article>
+    <article class="metric metric--red"><h2>Без соответствия</h2><strong data-count="not_found">—</strong></article>
   </div>
+  <section class="workspace workspace--padded job-review" data-mapping-review-panel hidden><p data-approval-status role="status">Утверждение подтвердит все текущие соответствия и пустые строки.</p><div class="heading__actions"><button class="button button--primary" type="button" data-approve disabled>Утвердить результат</button><a class="button" data-export="source.json" aria-disabled="true">Исходный JSON</a><a class="button" data-export="result.json" aria-disabled="true">Предварительный JSON</a><a class="button" data-export="result.xlsx" aria-disabled="true">Excel</a><a class="button" data-export="approved.json" aria-disabled="true">Утверждённый JSON</a></div></section>
   <section class="workspace" aria-labelledby="table-title">
     <div class="workspace__head"><div><h2 id="table-title">Позиции спецификации</h2><p>Предварительный подбор · ручной выбор сохраняется отдельно от исходного JSON</p></div><div class="workspace__tools"><label class="page__sr-only" for="filter">Поиск по спецификации</label><input class="input" id="filter" type="search" placeholder="Поиск по спецификации…" data-filter><label class="page__sr-only" for="status">Фильтр статуса</label><select class="input" id="status" data-status><option value="all">Все статусы</option><option value="matched">Подобрано</option><option value="review">Требует проверки</option><option value="not_found">Не найдено</option><option value="manual">Вручную</option></select></div></div>
     <div class="match-table__scroll"><table class="match-table"><caption class="page__sr-only">Сопоставления с каталогом 1С. Оценка cosine — мера сходства, не вероятность.</caption><thead><tr><th scope="col">№</th><th scope="col">Исходная позиция / Caption</th><th scope="col">Ед. / Кол-во</th><th scope="col">Номенклатура 1С</th><th scope="col">Cosine</th><th scope="col">Статус</th><th scope="col">Действие</th></tr></thead><tbody data-rows></tbody></table></div>

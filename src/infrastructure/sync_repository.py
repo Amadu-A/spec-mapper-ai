@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import defer
 
 from src.domain.catalog_sync import (
     METRIC_FIELDS,
@@ -462,24 +463,51 @@ class SqlSyncRepository:
         limit: int = 10,
         state: str = "",
         order: str = "desc",
+        profile: str = "",
     ) -> dict:
-        """Оператор видит метаданные; чужие source/result/selection endpoints остаются закрытыми."""
-        from src.application.mappings import public_status
-
-        filters = [JobRow.kind == "mapping", JobRow.expires_at > self.jobs.clock()]
+        """Оба профиля с owner-safe links; global обзор не выдаёт source или чужие filename."""
+        filters = [JobRow.kind.in_(["mapping", "invoice"]), JobRow.expires_at > self.jobs.clock()]
         if owner is not None:
             filters.append(JobRow.owner == owner)
+        if profile:
+            filters.append(JobRow.kind == ("invoice" if profile == "invoice" else "mapping"))
         if state:
-            filters.append(JobRow.state == state)
+            filters.append(
+                JobRow.state.in_(["complete", "ready_for_review"])
+                if state == "awaiting_review"
+                else JobRow.state == state
+            )
         async with self.sessions() as session:
             total = await session.scalar(select(func.count()).select_from(JobRow).where(*filters))
             sort = JobRow.created_at.asc() if order == "asc" else JobRow.created_at.desc()
             rows = await session.scalars(
-                select(JobRow).where(*filters).order_by(sort, JobRow.id).offset(offset).limit(limit)
+                select(JobRow)
+                .options(defer(JobRow.data))
+                .where(*filters)
+                .order_by(sort, JobRow.id)
+                .offset(offset)
+                .limit(limit)
             )
             items = []
             for row in rows:
                 own = owner == row.owner
+                view = await self.jobs.metadata(session, row)
+                base = view["api_root"] + "/" + row.id
+                managed = view["api_root"].endswith("specifications")
+                invoice = row.kind == "invoice"
+                exports = {}
+                if own and row.state in {"complete", "ready_for_review", "approved"}:
+                    exports["source"] = (
+                        "/api/v1/mappings/" + row.id if managed else base
+                    ) + "/source.json"
+                    exports["draft"] = base + (
+                        "/draft.json" if invoice or managed else "/result.json"
+                    )
+                    if row.state == "approved":
+                        exports["result"] = base + (
+                            "/result.json" if invoice or managed else "/approved.json"
+                        )
+                        exports["xlsx"] = base + "/result.xlsx"
                 integration = (
                     row.owner[4:] if row.owner in {"api:onec", "api:telegram"} else "legacy"
                 )
@@ -488,12 +516,41 @@ class SqlSyncRepository:
                     if row.owner.startswith("web:")
                     else (
                         "spec-extracting-ai"
-                        if row.data.get("ingestion") == "extracting"
+                        if view["extracting_applicable"]
                         else "import-json (" + integration + ")"
                     )
                 )
                 items.append(
-                    {**public_status(job_dict(row)), "source_type": source, "can_open": own}
+                    {
+                        "job_id": row.id,
+                        "kind": row.kind,
+                        "profile": view["profile"],
+                        "status": view["status"] if invoice else row.state,
+                        "stage": row.stage,
+                        "source_job_id": None,
+                        "created_at": row.created_at,
+                        "expires_at": row.expires_at,
+                        "revision": row.revision,
+                        "error_code": row.error_code,
+                        "total": view["total_items"] or 0,
+                        "processed": view["processed_items"],
+                        "total_known": view["total_items"] is not None,
+                        "unresolved_count": view.get("unresolved_count") or 0,
+                        "counts": {
+                            name: view.get("counts", {}).get(name, 0)
+                            for name in ("matched", "manual", "review", "not_found")
+                        },
+                        "catalog_version": view.get("catalog_version"),
+                        "approved_at": view.get("approved_at"),
+                        "approved_revision": view.get("approved_revision"),
+                        "links": {"status": base} if own else {},
+                        "source_type": source,
+                        "can_open": own,
+                        "api_root": view["api_root"],
+                        "ui_url": view["links"]["ui"] if own else None,
+                        "export_links": exports,
+                        "progress": view if own else None,
+                    }
                 )
             return {"total": total, "offset": offset, "items": items}
 

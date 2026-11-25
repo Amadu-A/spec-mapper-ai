@@ -211,10 +211,11 @@ async def operator_jobs(
     limit: int = Query(20, ge=1, le=100),
     state: str = Query("", max_length=32),
     order: Literal["asc", "desc"] = "desc",
+    profile: Literal["", "specification", "invoice"] = "",
 ) -> dict:
     """Глобальный read-only обзор метаданных не даёт право читать/редактировать чужой job."""
     return await request.app.state.container.sync_repository.jobs_page(
-        None, offset, limit, state, order
+        None, offset, limit, state, order, profile
     )
 
 
@@ -226,10 +227,11 @@ async def own_jobs(
     limit: int = Query(10, ge=1, le=100),
     state: str = Query("", max_length=32),
     order: Literal["asc", "desc"] = "desc",
+    profile: Literal["", "specification", "invoice"] = "",
 ) -> dict:
     """Обычная сессия/интеграция видит только свои неистёкшие задания с сортировкой/пагинацией."""
     return await request.app.state.container.sync_repository.jobs_page(
-        current, offset, limit, state, order
+        current, offset, limit, state, order, profile
     )
 
 
