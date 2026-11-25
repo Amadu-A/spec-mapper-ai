@@ -89,6 +89,8 @@ class MappingStatus(BaseModel):
     counts: dict[str, int]
     catalog_version: str | None
     links: dict[str, str]
+    reused: bool = False
+    progress: dict | None = None
 
 
 class Approval(BaseModel):

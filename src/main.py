@@ -18,7 +18,9 @@ from src.domain.models import MapperError
 from src.observability import configure_logging
 from src.presentation.catalog_events import router as catalog_events_router
 from src.presentation.dashboard_routes import router as dashboard_router
-from src.presentation.middleware import LimitsMiddleware
+from src.presentation.invoices import router as invoices_router
+from src.presentation.lifecycle import router as lifecycle_router
+from src.presentation.middleware import InvoiceUploadError, LimitsMiddleware
 from src.presentation.routes import router
 from src.presentation.security import COOKIE, new_session
 from src.presentation.specifications import router as specifications_router
@@ -49,30 +51,39 @@ def create_app(container: Container | None = None) -> FastAPI:
         openapi_url="/api/openapi.json",
         servers=[{"url": container.settings.app_public_base_url}],
         description=(
-            "Вторая ступень обработки спецификаций: "
-            "JSON → Top-5 → ручной выбор → утверждение для 1С."
+            "Сопоставление спецификаций и счетов через независимые профили на 8087: "
+            "документы/JSON → Top-5 → ручной выбор → утверждение для 1С."
         ),
     )
     app.state.container = container
+    app.state.lifecycle_streams = {}
     app.add_middleware(
         LimitsMiddleware,
         max_bytes=container.settings.max_result_bytes,
         max_pdf_bytes=container.settings.max_pdf_bytes,
+        invoice_max_batch_bytes=container.settings.invoice_max_batch_bytes,
         per_minute=container.settings.rate_limit_per_minute,
         timeout=container.settings.http_timeout_seconds,
         webhook_max_bytes=container.settings.onec_webhook_max_body_bytes,
         webhook_per_minute=container.settings.onec_webhook_rate_limit_per_minute,
     )
     templates = Jinja2Templates(directory=ROOT / "web" / "templates")
+    app.mount(
+        "/static/swagger",
+        StaticFiles(directory=ROOT / "resources" / "swagger_ui"),
+        name="swagger-assets",
+    )
     app.mount("/static", StaticFiles(directory=ROOT / "web" / "static"), name="static")
     app.include_router(router)
     app.include_router(specifications_router)
+    app.include_router(invoices_router)
+    app.include_router(lifecycle_router)
     app.include_router(dashboard_router)
     app.include_router(catalog_events_router)
 
     @app.get("/docs", include_in_schema=False)
     async def api_docs(request: Request):
-        """Отображает локальную страницу OpenAPI без CDN и без передачи серверных ключей."""
+        """Отображает локальные OpenAPI/Swagger UI без CDN и без передачи серверных ключей."""
         return templates.TemplateResponse(request=request, name="api_docs.html", context={})
 
     @app.exception_handler(MapperError)
@@ -84,6 +95,11 @@ def create_app(container: Container | None = None) -> FastAPI:
             details["retry_after"] = error.retry_after
             headers["Retry-After"] = str(error.retry_after)
         return JSONResponse({"error": details}, error.status, headers=headers)
+
+    @app.exception_handler(InvoiceUploadError)
+    async def invoice_upload_error(request: Request, error: InvoiceUploadError) -> JSONResponse:
+        """Сохраняет контракт ограниченного streaming multipart при ошибке до parsing."""
+        return JSONResponse({"error": error.detail}, error.status_code)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
@@ -125,6 +141,7 @@ def create_app(container: Container | None = None) -> FastAPI:
         titles = {
             "home": "Главная",
             "mapping": "Сопоставление",
+            "invoices": "Сопоставление счетов",
             "jobs": "Задания",
             "catalog": "Справочник номенклатуры",
             "settings": "Настройки",
@@ -161,6 +178,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     for path in (
         "/",
         "/mapping",
+        "/invoices",
         "/jobs",
         "/catalog",
         "/settings",

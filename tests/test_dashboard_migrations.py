@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import insert, select, text
+from sqlalchemy import MetaData, Table, insert, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.config import Settings
@@ -50,8 +50,11 @@ async def check_upgrade(engine):
             insert(CatalogVersionRow).values(id=version, metadata_json={"count": 1}, created_at=now)
         )
         await connection.execute(insert(CatalogStateRow).values(id=1, active=version, syncing=True))
+        legacy_jobs = await connection.run_sync(
+            lambda conn: Table("mapping_jobs", MetaData(), autoload_with=conn)
+        )
         await connection.execute(
-            insert(JobRow).values(
+            insert(legacy_jobs).values(
                 id=job_id,
                 owner="legacy-owner",
                 idempotency_hash="a" * 64,
@@ -81,6 +84,9 @@ async def check_upgrade(engine):
         assert await connection.scalar(select(CatalogStateRow.active)) == version
         assert await connection.scalar(select(CatalogStateRow.syncing)) is True
         assert await connection.scalar(select(ApprovalRow.snapshot)) == snapshot
+        assert await connection.scalar(select(JobRow.data)) == {"approval": snapshot}
+        for revision in ["0005", "0006", "0007"]:
+            await connection.run_sync(upgrade, revision)
         assert await connection.scalar(select(JobRow.data)) == {"approval": snapshot}
 
 

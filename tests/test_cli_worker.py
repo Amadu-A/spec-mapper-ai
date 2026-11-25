@@ -33,7 +33,7 @@ async def test_dispatcher_marks_only_confirmed_messages(system, source, monkeypa
     job = await container.mappings.import_document("owner", "dispatch", source)
     published = []
 
-    async def publish(job_id):
+    async def publish(job_id, generation=None):
         """Подменяет только broker publish успешным publisher confirm."""
         published.append(job_id)
 
@@ -54,7 +54,7 @@ async def test_dispatcher_failure_does_not_lose_outbox(system, source, monkeypat
     container, *_ = system
     job = await container.mappings.import_document("owner", "dispatch-fail", source)
 
-    async def fail(job_id):
+    async def fail(job_id, generation=None):
         """Эмулирует потерю связи до publisher confirm без изменения durable DB."""
         raise ConnectionError("no broker")
 
@@ -79,7 +79,7 @@ async def test_scheduler_configuration_failure_does_not_block_mapping(system, so
         """Имитирует отказ конфигурации до enqueue импорта."""
         raise ValueError("invalid source configuration")
 
-    async def publish(job_id):
+    async def publish(job_id, generation=None):
         """Подтверждает доставку независимого mapping UUID."""
         published.append(job_id)
 

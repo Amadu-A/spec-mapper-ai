@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from time import time
 from uuid import UUID
 
 from src.application.ports import CatalogRepository, JobRepository
 from src.application.reports import export_json
+from src.domain.lifecycle import snapshot as lifecycle_snapshot
 from src.domain.models import (
     MapperError,
     confirm_rows,
@@ -20,9 +23,18 @@ from src.observability import timed
 class MappingUseCases:
     """Единые use-cases для API и web; владельца назначает только delivery слой."""
 
-    def __init__(self, jobs: JobRepository, catalog: CatalogRepository, max_items: int) -> None:
+    def __init__(
+        self,
+        jobs: JobRepository,
+        catalog: CatalogRepository,
+        max_items: int,
+        *,
+        kind: str = "mapping",
+        exporter: Callable[[dict], dict] = export_json,
+    ) -> None:
         """Получает атомарные repository ports и лимит исходного документа."""
         self.jobs, self.catalog, self.max_items = jobs, catalog, max_items
+        self.kind, self.exporter = kind, exporter
 
     @timed("mapping_submit")
     async def submit(self, owner: str, key: str, source_job_id: str) -> dict:
@@ -52,7 +64,9 @@ class MappingUseCases:
     async def result(self, owner: str, job_id: str) -> dict:
         """Не выдаёт незавершённый подбор за готовый результат."""
         job = await self.jobs.get(job_id, owner)
-        if job["kind"] != "mapping" or job["state"] not in {
+        if job["kind"] != self.kind:
+            raise MapperError("not_found", "Задание этого профиля не найдено", 404)
+        if job["state"] not in {
             "complete",
             "ready_for_review",
             "approved",
@@ -86,7 +100,15 @@ class MappingUseCases:
         return await self.jobs.select(job_id, owner, index, item, revision)
 
     @timed("mapping_approve")
-    async def approve(self, owner: str, job_id: str, revision: int, key: str) -> dict:
+    async def approve(
+        self,
+        owner: str,
+        job_id: str,
+        revision: int,
+        key: str,
+        *,
+        approval_context: dict | None = None,
+    ) -> dict:
         """Фиксирует общий результат; автоматические строки подтверждаются общей операцией."""
         job = await self.result(owner, job_id)
         if job["state"] != "approved":
@@ -96,11 +118,15 @@ class MappingUseCases:
                 )
             ensure_approvable(job["state"], job["data"]["rows"])
         snapshot_job = {**job, "data": {**job["data"], "rows": confirm_rows(job["data"]["rows"])}}
-        return await self.jobs.approve(job_id, owner, revision, key, export_json(snapshot_job))
+        if approval_context is not None:
+            snapshot_job["data"]["approval_context"] = approval_context
+        return await self.jobs.approve(job_id, owner, revision, key, self.exporter(snapshot_job))
 
 
 def public_status(job: dict) -> dict:
     """Убирает source, lease и owner из status; считает totals по всему заданию."""
+    if job["kind"] == "invoice":
+        raise MapperError("not_found", "Задание этого профиля не найдено", 404)
     rows = job["data"].get("rows", [])
     counts = {
         name: sum(row["status"] == name for row in rows)
@@ -109,6 +135,8 @@ def public_status(job: dict) -> dict:
     job_id = job["id"]
     return {
         "job_id": job_id,
+        "reused": job.get("reused", False),
+        "progress": lifecycle_snapshot(job, time()) if job["kind"] == "mapping" else None,
         "kind": job["kind"],
         "status": job["state"],
         "stage": job["stage"],

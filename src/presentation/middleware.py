@@ -8,8 +8,17 @@ import logging
 from collections import defaultdict, deque
 from time import monotonic
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+
+class InvoiceUploadError(HTTPException):
+    """HTTP-граница лимита: multipart parser должен сохранить 413/408, а не подменить на 400."""
+
+    def __init__(self, code: str, message: str, status: int) -> None:
+        """Передаёт только безопасные код/сообщение; исходное тело запроса не сохраняется."""
+        super().__init__(status_code=status, detail={"code": code, "message": message})
 
 
 class LimitsMiddleware:
@@ -24,6 +33,7 @@ class LimitsMiddleware:
         webhook_max_bytes=32768,
         webhook_per_minute=120,
         max_pdf_bytes=50 * 1024 * 1024,
+        invoice_max_batch_bytes=100 * 1024 * 1024,
     ) -> None:
         """Задаёт общие лимиты одного API-процесса; reverse proxy не считается доверенным."""
         self.app, self.max_bytes, self.per_minute, self.timeout = (
@@ -33,6 +43,7 @@ class LimitsMiddleware:
             timeout,
         )
         self.max_pdf_bytes = max_pdf_bytes
+        self.invoice_max_batch_bytes = invoice_max_batch_bytes
         self.requests = defaultdict(deque)
         self.webhook_max_bytes, self.webhook_per_minute = webhook_max_bytes, webhook_per_minute
 
@@ -68,7 +79,27 @@ class LimitsMiddleware:
         if scope.get("path") == "/api/v1/specifications":
             maximum = self.max_pdf_bytes + 65536
         content = bytearray()
-        if scope["method"] in {"POST", "PUT", "PATCH"}:
+        invoice_upload = scope.get("path") == "/api/v1/invoices" and scope["method"] == "POST"
+        if invoice_upload:
+            original_receive, total, deadline = receive, 0, monotonic() + self.timeout
+
+            async def invoice_receive():
+                """Ограничивает multipart поток до spool, не буферизуя весь пакет в middleware."""
+                nonlocal total
+                try:
+                    async with asyncio.timeout(max(0, deadline - monotonic())):
+                        message = await original_receive()
+                except TimeoutError as exc:
+                    raise InvoiceUploadError(
+                        "upload_timeout", "Истекло время загрузки", 408
+                    ) from exc
+                total += len(message.get("body", b""))
+                if total > self.invoice_max_batch_bytes + 655360:
+                    raise InvoiceUploadError("upload_limit", "Превышен размер пакета счетов", 413)
+                return message
+
+            receive = invoice_receive
+        elif scope["method"] in {"POST", "PUT", "PATCH"}:
             try:
                 async with asyncio.timeout(self.timeout):
                     async for chunk in Request(scope, receive).stream():

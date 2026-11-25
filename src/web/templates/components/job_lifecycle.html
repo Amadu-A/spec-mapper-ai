@@ -1,0 +1,16 @@
+<!-- src/web/templates/components/job_lifecycle.html -->
+{# Общая панель двух workspace; значения поступают только из owner-safe lifecycle API. #}
+<section class="job-lifecycle workspace workspace--padded" data-job-lifecycle aria-label="Ход обработки задания">
+  <div class="job-lifecycle__head"><div><strong data-lifecycle-stage>Новое задание</strong><p class="match-table__meta" data-lifecycle-package>Выберите входные документы или готовый JSON</p></div><div class="job-lifecycle__actions"><span class="match-table__meta" data-lifecycle-clock></span><button class="button" type="button" data-job-new>＋ Новое задание</button><button class="button" type="button" data-job-cancel hidden>Отменить</button></div></div>
+  <div class="job-lifecycle__history"><label for="job-history">Мои задания</label><select class="input" id="job-history" data-job-history><option value="">Выберите задание</option></select><span data-job-active-count>Проверка истории…</span><button class="button" type="button" data-job-history-refresh>Обновить</button></div>
+  <ol class="job-lifecycle__steps" data-lifecycle-steps aria-label="Этапы обработки"><li>Принято</li><li>Очередь</li><li>Извлечение</li><li>Подбор</li><li>Проверка</li><li>Утверждение</li></ol>
+  <div class="job-lifecycle__progress" data-lifecycle-progress hidden><span data-lifecycle-progress-text></span><span data-lifecycle-percent></span><progress max="100" aria-label="Ход обработки" data-lifecycle-bar></progress></div>
+  <div class="job-lifecycle__files" data-lifecycle-files></div>
+  <p class="job-lifecycle__connection" role="status" aria-live="polite" data-lifecycle-connection></p>
+  <p class="job-lifecycle__connection" role="alert" data-lifecycle-warning hidden></p>
+  <button class="button" type="button" data-job-retry-submit hidden>Повторить отправку с прежним ключом</button>
+  <details class="job-lifecycle__journal"><summary>Журнал этапов <span data-lifecycle-event-count></span></summary><ol data-lifecycle-journal></ol></details>
+  <p class="match-table__meta" data-lifecycle-last-event>Последнее событие появится после приёма задания</p>
+  <details class="job-lifecycle__technical"><summary>UUID и срок хранения</summary><p class="match-table__meta" data-lifecycle-id></p><p class="match-table__meta" data-lifecycle-expiry></p></details>
+</section>
+<dialog class="job-cancel-dialog" data-job-cancel-dialog aria-labelledby="job-cancel-title"><h2 id="job-cancel-title">Отменить это задание?</h2><p data-job-cancel-description>Отмена будет запрошена. Текущий шаг может завершиться до остановки.</p><div class="job-lifecycle__actions"><button class="button" type="button" data-job-cancel-back>Продолжить работу</button><button class="button button--primary" type="button" data-job-cancel-confirm>Подтвердить отмену</button></div></dialog>

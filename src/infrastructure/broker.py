@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 
 import aio_pika
 
+from src.domain.models import MapperError
+
 
 class RabbitBroker:
     """Сообщение содержит только UUID задания; confidential payload остаётся в PostgreSQL."""
@@ -31,25 +33,30 @@ class RabbitBroker:
             if self.connection is not None:
                 await self.connection.close()
             self.connection = await aio_pika.connect_robust(self.settings.amqp_url, timeout=10)
-            self.channel = await self.connection.channel(publisher_confirms=True)
+            self.channel = await self.connection.channel(
+                publisher_confirms=True, on_return_raises=True
+            )
             await self.channel.set_qos(prefetch_count=self.settings.worker_concurrency)
             self.queue = await self.channel.declare_queue(
                 self.settings.rabbitmq_queue, durable=True
             )
 
-    async def publish(self, job_id: str) -> None:
+    async def publish(self, job_id: str, generation: int | None = None) -> None:
         """Ждёт broker confirm; сбой оставляет outbox для повторной публикации."""
         await self.connect()
-        await self.channel.default_exchange.publish(
+        confirmation = await self.channel.default_exchange.publish(
             aio_pika.Message(
                 body=job_id.encode("ascii"),
                 message_id=job_id,
+                headers={"mapper-generation": generation} if generation is not None else None,
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             ),
             routing_key=self.settings.rabbitmq_queue,
             mandatory=True,
-            timeout=10,
+            timeout=self.settings.delivery_publish_timeout,
         )
+        if getattr(confirmation, "name", None) != "Basic.Ack":
+            raise MapperError("delivery_unconfirmed", "Брокер не подтвердил публикацию", 503)
 
     async def messages(self) -> AsyncIterator:
         """Возвращает сообщения с ручным ack, оставляя redelivery под контролем lease."""

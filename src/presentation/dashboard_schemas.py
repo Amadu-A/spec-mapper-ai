@@ -85,6 +85,12 @@ class JobMetadata(MappingStatus):
 
     source_type: str
     can_open: bool
+    kind: Literal["mapping", "catalog", "invoice"]
+    profile: Literal["specification", "invoice"]
+    api_root: str
+    ui_url: str | None
+    export_links: dict[str, str]
+    total_known: bool
 
 
 class JobsPage(BaseModel):

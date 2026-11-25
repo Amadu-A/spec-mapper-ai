@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Float,
     ForeignKey,
@@ -25,7 +26,10 @@ class JobRow(Base):
     """Атомарный агрегат задания; JSON source хранится отдельно от списка результатов."""
 
     __tablename__ = "mapping_jobs"
-    __table_args__ = (UniqueConstraint("owner", "idempotency_hash"),)
+    __table_args__ = (
+        UniqueConstraint("owner", "idempotency_hash"),
+        Index("uq_active_job_input", "owner", "active_fingerprint", unique=True),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner: Mapped[str] = mapped_column(String(80), index=True)
     idempotency_hash: Mapped[str] = mapped_column(String(64))
@@ -42,6 +46,52 @@ class JobRow(Base):
     revision: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     data: Mapped[dict] = mapped_column(JSON)
+    # Outbox независим от business state; все виды new_job получают его в том же INSERT.
+    delivery_state: Mapped[str] = mapped_column(
+        String(24), default="pending", server_default="pending", index=True
+    )
+    delivery_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    delivery_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    delivery_until: Mapped[float | None] = mapped_column(Float, nullable=True)
+    delivery_next_at: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    delivery_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    delivery_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delivery_published_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    delivery_received_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    delivery_recoveries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    delivery_noops: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    started_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_event_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    active_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    temporary_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    lifecycle_metadata: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+
+
+class JobKeyRow(Base):
+    """Дополнительный ключ принятого запроса сохраняет конфликт payload после active dedup."""
+
+    __tablename__ = "mapping_job_keys"
+    owner: Mapped[str] = mapped_column(String(80), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE")
+    )
+
+
+class JobEventRow(Base):
+    """Ограниченный журнал безопасных переходов с отдельным от review revision cursor."""
+
+    __tablename__ = "mapping_job_events"
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[float] = mapped_column(Float)
+    kind: Mapped[str] = mapped_column(String(48))
+    data: Mapped[dict] = mapped_column(JSON)
 
 
 class SpecificationUploadRow(Base):
@@ -51,6 +101,17 @@ class SpecificationUploadRow(Base):
     job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
     )
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class InvoiceUploadRow(Base):
+    """Ограниченные blobs пакета счетов; метаданные находятся в job, TTL общий."""
+
+    __tablename__ = "invoice_uploads"
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("mapping_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    file_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
 

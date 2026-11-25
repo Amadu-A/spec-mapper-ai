@@ -3,6 +3,7 @@
 import { api, writeOptions } from "./api.js";
 import { element } from "./dom.js";
 import { sourceAttributes } from "./source-fields.js";
+import {createJobWorkspace} from "./job-workspace.js";
 import { createSelection } from "./selection.js";
 import { canApprove, canDownloadExport, clearSelectionRequest, debounce, labels, newIdempotencyKey, pageInfo, stages, terminal, validUuid } from "./state.js";
 
@@ -11,7 +12,9 @@ export function createMapping(notify) {
   let jobId, revision = 0, offset = 0, timer, expiration, generation = 0;
   let resultGeneration = 0;
   let currentStatus = "queued";
-  let mutationBusy = false;
+  let mutationBusy = false,submitBusy=false,workspace,apiRoot="/api/v1/mappings";
+  let submitSequence=0;
+  const pdfForm=document.querySelector("[data-specification-upload]");
   const approveButton = document.querySelector("[data-approve]");
   let pendingSubmit;
   async function submitOnce(path, payload) {
@@ -28,7 +31,7 @@ export function createMapping(notify) {
   const choose = createSelection(async (saved = true) => {
     await poll();
     notify(saved ? "Выбор сохранён в базе данных" : "Таблица обновлена. Повторите свой выбор после изменения в другой вкладке.", !saved);
-  });
+  },{root:()=>apiRoot});
 
   function disableExports(disabled) {
     /** Не позволяет скачать чужое, незавершённое или истёкшее задание из UI. */
@@ -36,22 +39,25 @@ export function createMapping(notify) {
       const unavailable = disabled || !canDownloadExport(link.dataset.export, currentStatus);
       link.setAttribute("aria-disabled", String(unavailable));
       if (unavailable) link.removeAttribute("href");
-      else link.href = `/api/v1/mappings/${jobId}/${link.dataset.export}`;
+      else {const kind=link.dataset.export,managed=apiRoot.endsWith("specifications"),base=managed&&kind!=="source.json"?apiRoot:"/api/v1/mappings";const file=managed&&kind==="approved.json"?"result.json":managed&&kind==="result.json"?"draft.json":kind;link.href=`${base}/${jobId}/${file}`;}
     });
   }
-  function expire() {
+  function expire(fromLifecycle=false,reason=410) {
+    submitSequence++;
     /** Убирает временный документ из DOM по TTL, даже если вкладка оставалась открытой. */
-    generation++; resultGeneration++; currentStatus = "expired"; clearTimeout(timer); disableExports(true); rowsNode.replaceChildren();
+    if(!fromLifecycle&&workspace){workspace.invalidate();return;}workspace?.stop();form.reset();pdfForm?.reset();clearTimeout(expiration);generation++; resultGeneration++; currentStatus = "expired"; clearTimeout(timer); disableExports(true); rowsNode.replaceChildren();
     approveButton.disabled = true;
     document.querySelector("[data-empty]").hidden = false;
-    document.querySelector("[data-empty]").textContent = "Срок хранения задания истёк. Создайте новое сопоставление.";
-    document.querySelector("[data-drawer]").close();
+    document.querySelector("[data-empty]").textContent = reason===410?"Срок хранения задания истёк. Создайте новое сопоставление.":"Задание не найдено или недоступно. Создайте новое сопоставление.";
+    choose.reset();importInput.value="";jobId=undefined;pendingSubmit=undefined;
+    document.querySelector("[data-job-id]").textContent="";
+    document.querySelectorAll("[data-count]").forEach(node=>node.textContent="—");
     document.querySelector("[data-candidates]").replaceChildren();
     document.querySelector("[data-search-results]").replaceChildren();
     document.querySelector("[data-source-caption]").textContent = "";
     document.querySelector("[data-source-meta]").textContent = "";
     document.querySelector("[data-source-file]").textContent = "";
-    notify("Срок хранения задания истёк", true);
+    notify(reason===410?"Срок хранения задания истёк":"Задание не найдено или недоступно", true);
   }
   function setMutationBusy(busy) {
     /** Не допускает одновременной очистки и утверждения из одной таблицы. */
@@ -63,7 +69,7 @@ export function createMapping(notify) {
     /** Явный крестик сохраняет подтверждённый null через тот же owner/revision API. */
     if (mutationBusy || currentStatus === "approved") return;
     const expectedJob = jobId, expectedGeneration = generation;
-    const request = clearSelectionRequest(jobId, row.index, revision);
+    const request = clearSelectionRequest(jobId, row.index, revision);request.path=request.path.replace("/api/v1/mappings",apiRoot);
     setMutationBusy(true);
     try {
       await api(request.path, request.options);
@@ -115,7 +121,7 @@ export function createMapping(notify) {
     const request = ++resultGeneration, expectedJob = jobId;
     try {
       const query = new URLSearchParams({ q: filter.value, status: status.value, offset, limit });
-      const data = await api(`/api/v1/mappings/${jobId}/result?${query}`);
+      const data = await api(`${apiRoot}/${jobId}/${apiRoot.endsWith("specifications")?"rows":"result"}?${query}`);
       if (request !== resultGeneration || expectedJob !== jobId) return;
       revision = data.revision; rowsNode.replaceChildren(...data.items.map(renderRow));
       document.querySelector("[data-source-file]").textContent = data.file_name ? `Файл: ${data.file_name}` : "";
@@ -132,67 +138,108 @@ export function createMapping(notify) {
     /** Восстанавливает durable state; ручная проверка не мешает техническому завершению. */
     clearTimeout(timer); const request = generation;
     try {
-      const data = await api(`/api/v1/mappings/${jobId}`);
+      const data = await api(`${apiRoot}/${jobId}`);
       if (request !== generation) return;
-      revision = data.revision; currentStatus = data.status;
-      approveButton.disabled = !canApprove(data.status, mutationBusy);
+      revision = data.revision; currentStatus = data.status==="awaiting_review"?"ready_for_review":data.status;
+      approveButton.disabled = !canApprove(currentStatus, mutationBusy);
       document.querySelector("[data-approval-status]").textContent = data.status === "approved" ? `Результат утверждён ${new Date(data.approved_at * 1000).toLocaleString("ru")}. Финальный JSON доступен для 1С.` : `«Утвердить результат» подтвердит текущие соответствия и пустые строки сразу во всей спецификации. Спорных строк: ${data.unresolved_count}. Ошибочный выбор можно предварительно убрать крестиком.`;
-      document.querySelector("[data-job-status]").textContent = `${stages[data.status] || data.stage}${data.error_code ? ` · ${data.error_code}` : ""} · ${data.processed}/${data.total}`;
+      document.querySelector("[data-job-status]").textContent = `${stages[currentStatus] || data.stage}${data.error_code ? ` · ${data.error_code}` : ""}`;
       document.querySelector("[data-pipeline]").textContent = `${stages[data.status] || data.stage} · хранение до ${new Date(data.expires_at * 1000).toLocaleTimeString("ru")}. ${data.status === "approved" ? "Текущие соответствия и пустые строки подтверждены человеком." : "Автоподбор не означает проверку человеком."}`;
       document.querySelector("[data-count='total']").textContent = data.total;
       document.querySelector("[data-count='matched']").textContent = data.counts.matched + data.counts.manual;
       for (const name of ["review", "not_found"]) document.querySelector(`[data-count='${name}']`).textContent = data.counts[name];
       clearTimeout(expiration); expiration = setTimeout(expire, Math.max(0, data.expires_at * 1000 - Date.now()));
-      if (["complete", "ready_for_review", "approved"].includes(data.status)) { disableExports(false); await loadRows(); }
-      else if (!terminal(data.status)) timer = setTimeout(poll, 3000);
-      else notify(`Обработка не выполнена: ${data.error_code}. Создайте новое задание после устранения причины.`, true);
+      if (["complete", "ready_for_review", "approved"].includes(currentStatus)) { disableExports(false); await loadRows(); }
+      else if(currentStatus==="cancelled"){rowsNode.replaceChildren();document.querySelector("[data-empty]").hidden=false;document.querySelector("[data-empty]").textContent="Задание отменено";}
+      else if(currentStatus==="failed")notify(`Обработка не выполнена: ${data.error_code}. Создайте новое задание после устранения причины.`, true);
+      return true;
     } catch (error) {
-      if (request !== generation) return;
+      if (request !== generation) return true;
       if (error.status === 410 || error.status === 404) { expire(); return; }
-      notify(error.message, true); timer = setTimeout(poll, 5000);
+      notify(error.message, true);return false;
     }
   }
   async function open(id) {
     /** Очищает предыдущий результат и закрепляет UUID в URL без хранения документа в localStorage. */
-    generation++; resultGeneration++; clearTimeout(timer); clearTimeout(expiration); jobId = id; offset = 0;
+    choose.reset();generation++; resultGeneration++; clearTimeout(timer); clearTimeout(expiration); jobId = id; offset = 0;
     currentStatus = "queued"; approveButton.disabled = true;
     document.querySelector("[data-source-file]").textContent = "";
     rowsNode.replaceChildren(); disableExports(true); filter.value = ""; status.value = "all";
     document.querySelector("[data-empty]").hidden = false;
     document.querySelector("[data-empty]").textContent = "Ожидание результата сопоставления…";
     document.querySelector("[data-job-id]").textContent = `Задание: ${id}`;
-    const url = new URL(location.href); url.searchParams.set("job", id); history.replaceState(null, "", url); await poll();
+    const url = new URL(location.href); url.searchParams.set("job", id); url.searchParams.delete("new");history.replaceState(null, "", url); await workspace.watch(id);
+  }
+  function updateInputs() {
+    /** Краткий request busy не снимает logical lock активного или принятого задания. */
+    const locked=submitBusy||workspace?.canSubmit()===false;
+    form.querySelectorAll("input,button").forEach(node=>node.disabled=locked);importInput.disabled=locked;
+    form.querySelector("button").textContent=workspace?.submitLabel("Сопоставить")||"Сопоставить";
+    if(pdfForm){[...pdfForm.elements].forEach(node=>node.disabled=locked);pdfForm.querySelector("button").textContent=workspace?.submitLabel("Извлечь и сопоставить")||"Извлечь и сопоставить";}
   }
   form.addEventListener("submit", async event => {
-    event.preventDefault(); const id = input.value.trim();
-    if (!validUuid(id)) { notify("Укажите полный UUID задания извлечения", true); input.focus(); return; }
-    const button = form.querySelector("button"); button.disabled = true;
-    try { const job = await submitOnce("/api/v1/mappings", { source_job_id: id }); await open(job.job_id); }
-    catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+    event.preventDefault();if(submitBusy)return;const id=input.value.trim();
+    if(!validUuid(id)){notify("Укажите полный UUID задания извлечения",true);input.focus();return;}
+    let key;try{key=workspace.begin("external:"+id,()=>form.requestSubmit());}catch(error){notify(error.message,true);return;}
+    if(!key)return;const submission=++submitSequence;submitBusy=true;updateInputs();
+    try{const job=await api("/api/v1/mappings",writeOptions({source_job_id:id},key));if(submission!==submitSequence)return;await open(job.job_id);}
+    catch(error){if(submission===submitSequence){workspace.failed(error);notify(error.message,true);}}finally{if(submission===submitSequence){submitBusy=false;updateInputs();}}
   });
+  pdfForm?.addEventListener("submit",async event=>{
+    event.preventDefault();if(submitBusy)return;const file=pdfForm.elements.file.files[0];if(!file)return;
+    const pages=pdfForm.elements.pages.value,project=pdfForm.elements.project_code.value;
+    let key;try{key=workspace.begin(JSON.stringify([file.name,file.size,file.lastModified,pages,project]),()=>pdfForm.requestSubmit());}catch(error){notify(error.message,true);return;}
+    if(!key)return;const submission=++submitSequence;submitBusy=true;updateInputs();
+    try{const body=new FormData();body.append("file",file);body.append("pages",pages);body.append("project_code",project);const job=await api("/api/v1/specifications",{method:"POST",body,headers:{"Idempotency-Key":key}});if(submission!==submitSequence)return;pdfForm.elements.file.value="";await open(job.job_id);}
+    catch(error){if(submission===submitSequence){workspace.failed(error);notify(error.message,true);}}finally{if(submission===submitSequence){submitBusy=false;updateInputs();}}
+  });
+  form.addEventListener("input",()=>workspace.changed());pdfForm?.addEventListener("input",()=>workspace.changed());
   approveButton.addEventListener("click", async () => {
     if (!jobId || approveButton.disabled || mutationBusy) return;
     const expectedJob = jobId, expectedGeneration = generation;
     setMutationBusy(true);
-    try { await submitOnce(`/api/v1/mappings/${jobId}/approve`, { revision }); if (expectedJob === jobId && expectedGeneration === generation) notify("Все текущие соответствия и пустые строки подтверждены. Скачайте финальный JSON для 1С."); }
+    try { await submitOnce(`${apiRoot}/${jobId}/approve`, { revision }); if (expectedJob === jobId && expectedGeneration === generation) notify("Все текущие соответствия и пустые строки подтверждены. Скачайте финальный JSON для 1С."); }
     catch (error) { if (expectedJob === jobId && expectedGeneration === generation) notify(error.message, true); }
     finally { setMutationBusy(false); if (expectedJob === jobId && expectedGeneration === generation) await poll(); }
   });
-  importInput.addEventListener("change", async event => {
-    const file = event.target.files[0]; if (!file) return;
-    try {
-      if (file.size > 15000000) throw new Error("JSON превышает допустимый размер 15 МБ");
-      const document = JSON.parse(await file.text());
-      const job = await submitOnce("/api/v1/mappings/import-json", document); await open(job.job_id);
-    } catch (error) { notify(error.message, true); } finally { event.target.value = ""; }
-  });
+  async function importJson(file) {
+    /** JSON использует общий logical lock и тот же key при потерянном ответе POST. */
+    if(!file||submitBusy)return;if(file.size>15000000){notify("JSON превышает допустимый размер 15 МБ",true);return;}
+    let key;try{key=workspace.begin(`json:${file.name}:${file.size}:${file.lastModified}`,()=>importJson(file));}catch(error){notify(error.message,true);return;}
+    if(!key)return;const submission=++submitSequence;submitBusy=true;updateInputs();let sent=false;
+    try{const document=JSON.parse(await file.text());sent=true;const job=await api("/api/v1/mappings/import-json",writeOptions(document,key));if(submission!==submitSequence)return;await open(job.job_id);importInput.value="";}
+    catch(error){if(submission===submitSequence){if(!sent)error.status=422;workspace.failed(error);notify(error.message,true);}}finally{if(submission===submitSequence){submitBusy=false;updateInputs();}}
+  }
+  importInput.addEventListener("change",()=>importJson(importInput.files[0]));
   const filtered = debounce(() => { offset = 0; if (jobId) loadRows(); });
   filter.addEventListener("input", filtered); status.addEventListener("change", filtered);
   document.querySelector("[data-previous]").addEventListener("click", () => { offset = Math.max(0, offset - limit); loadRows(); });
   document.querySelector("[data-next]").addEventListener("click", () => { offset += limit; loadRows(); });
   const source = new URLSearchParams(location.search).get("source_job_id"); if (source) input.value = source;
-  // Сессия и обработчики готовы: разрешаем ввод независимо от фоновой сводки каталога.
-  input.disabled = false; importInput.disabled = false; form.querySelector("button").disabled = false;
-  document.querySelector("[data-job-status]").textContent = "Укажите ID задания извлечения или импортируйте готовый JSON";
-  return open;
+  function snapshotChanged(value) {
+    /** Сохраняет legacy представление статусов таблицы, используя фактический API root. */
+    apiRoot=value.api_root;revision=value.revision;currentStatus=value.status==="awaiting_review"?"ready_for_review":value.status;
+    document.querySelector("[data-job-status]").textContent=stages[currentStatus]||value.status;
+    document.querySelector("[data-count='total']").textContent=value.total_items??"—";
+    document.querySelector("[data-count='matched']").textContent=value.matched_count??"—";
+    for(const name of ["review","not_found"])document.querySelector(`[data-count='${name}']`).textContent=value.total_items===null?"—":value.counts[name]||0;
+    approveButton.disabled=!canApprove(currentStatus,mutationBusy);disableExports(!["complete","ready_for_review","approved"].includes(currentStatus));
+    const panel=document.querySelector("[data-mapping-input-panel]");if(panel)panel.open=false;
+    const review=document.querySelector("[data-mapping-review-panel]");if(review)review.hidden=!["awaiting_review","approved"].includes(value.status);
+    updateInputs();
+  }
+  function resetWorkspace() {
+    submitSequence++;choose.reset();
+    /** Новая форма не останавливает прежнюю обработку и не удаляет серверную историю. */
+    generation++;resultGeneration++;clearTimeout(timer);clearTimeout(expiration);jobId=undefined;currentStatus="idle";apiRoot="/api/v1/mappings";pendingSubmit=undefined;submitBusy=false;
+    input.value="";importInput.value="";pdfForm?.reset();rowsNode.replaceChildren();disableExports(true);approveButton.disabled=true;
+    document.querySelector("[data-source-file]").textContent="";document.querySelector("[data-job-id]").textContent="";
+    document.querySelectorAll("[data-count]").forEach(node=>node.textContent="—");document.querySelector("[data-empty]").hidden=false;document.querySelector("[data-empty]").textContent="Загрузите новую спецификацию или готовый JSON";
+    const panel=document.querySelector("[data-mapping-input-panel]");if(panel)panel.open=true;
+    const review=document.querySelector("[data-mapping-review-panel]");if(review)review.hidden=true;updateInputs();
+  }
+  workspace=createJobWorkspace({family:"specifications",onOpen:open,onState:snapshotChanged,onNew:resetWorkspace,onExpired:reason=>expire(true,reason),onChange:updateInputs,
+    onReady:async()=>{if(!await poll())throw new Error("Не удалось обновить результат. Восстанавливаем подключение.");},notify});
+  updateInputs();document.querySelector("[data-job-status]").textContent="Выберите PDF, UUID извлечения или готовый JSON";
+  return Object.assign(open,{restore:workspace.restore});
 }

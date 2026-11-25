@@ -19,6 +19,8 @@ dependencies = [
   "jinja2>=3.1.6,<4",
   "itsdangerous>=2.2,<3",
   "python-multipart>=0.0.20,<1",
+  "pymupdf>=1.26,<2",
+  "pillow>=11,<13",
 ]
 
 [dependency-groups]

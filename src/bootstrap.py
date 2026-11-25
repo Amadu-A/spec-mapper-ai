@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from src.application.catalog import PruneCatalogUseCase, SynchronizeCatalogUseCase
 from src.application.catalog_events import CatalogEvents
 from src.application.catalog_management import CatalogManagement
+from src.application.invoice_reports import invoice_export
+from src.application.invoices.service import Invoices
+from src.application.lifecycle import JobLifecycle
 from src.application.mappings import MappingUseCases
 from src.application.processing import JobProcessor
 from src.application.specifications import Specifications
@@ -23,6 +26,8 @@ from src.infrastructure.catalog_events import SqlCatalogEvents
 from src.infrastructure.catalog_sources import CatalogSourceFactory
 from src.infrastructure.http_clients import HttpExtractionSource, SharedEmbeddings
 from src.infrastructure.integration_status import IntegrationProbes
+from src.infrastructure.invoices.extracting import HttpInvoiceExtraction
+from src.infrastructure.invoices.uploads import InvoiceUploadInspector
 from src.infrastructure.operator_access import SqlOperatorAccess
 from src.infrastructure.qdrant import QdrantIndex
 from src.infrastructure.repositories import SqlCatalog, SqlJobs
@@ -52,6 +57,8 @@ class Container:
     integration_probes: IntegrationProbes
     catalog_events: CatalogEvents
     specifications: Specifications
+    invoices: Invoices
+    lifecycle: JobLifecycle
 
     async def ready(self) -> dict:
         """Проверяет реальные зависимости; недоступный shared endpoint никогда не
@@ -142,6 +149,7 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         synchronizer,
         settings,
     )
+    invoice_extraction = HttpInvoiceExtraction(http, settings)
     processor = JobProcessor(
         jobs,
         catalog,
@@ -153,6 +161,7 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         sources,
         sync,
         catalog_events,
+        invoice_extraction,
     )
     mappings = MappingUseCases(jobs, catalog, settings.max_items)
     return Container(
@@ -174,4 +183,14 @@ def build_container(settings: Settings, database_url: str | None = None) -> Cont
         IntegrationProbes(http, settings),
         catalog_events,
         Specifications(jobs, mappings, settings.max_pdf_bytes),
+        Invoices(
+            jobs,
+            MappingUseCases(
+                jobs, catalog, settings.invoice_max_items, kind="invoice", exporter=invoice_export
+            ),
+            invoice_extraction,
+            InvoiceUploadInspector(),
+            settings,
+        ),
+        JobLifecycle(jobs),
     )

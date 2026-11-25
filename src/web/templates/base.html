@@ -6,7 +6,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spec Mapper AI — сопоставление спецификаций</title>
+  <title>Spec Mapper AI — {{ title|default('Сопоставление спецификаций') }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/css/style.css">
   <script type="module" src="/static/js/app.js"></script>
@@ -16,8 +16,8 @@
 <aside class="sidebar" aria-label="Рабочее пространство">
   <a class="sidebar__brand" href="/"><span class="sidebar__logo">{{ icon('layers') }}</span><span>Spec Mapper AI<small>Сопоставление спецификаций<br>с номенклатурой 1С</small></span></a>
   <nav class="sidebar__nav" aria-label="Основное меню">
-    {% for name, label, path, glyph in [('home','Главная','/','home'),('jobs','Задания','/jobs','jobs'),('catalog','Справочник номенклатуры','/catalog','layers'),('settings','Настройки','/settings','settings'),('integrations','API и интеграция','/integrations','code'),('events','Журнал событий','/events','file')] %}
-    <a class="sidebar__link{% if view == name or view == 'mapping' and name == 'jobs' %} sidebar__link--active{% endif %}" href="{{ path }}"{% if view == name %} aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+    {% for name, label, path, glyph in [('home','Главная','/','home'),('mapping','Сопоставление спецификаций','/mapping','file'),('invoices','Сопоставление счетов','/invoices','file'),('jobs','Все задания','/jobs','jobs'),('catalog','Справочник номенклатуры','/catalog','layers'),('settings','Настройки','/settings','settings'),('integrations','API и интеграция','/integrations','code'),('events','Журнал событий','/events','file')] %}
+    <a class="sidebar__link{% if view == name %} sidebar__link--active{% endif %}" href="{{ path }}"{% if view == name %} aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
     {% endfor %}
   </nav>
   <div class="sidebar__bottom"><small>v{{ app_version|default('1.0.0') }}</small><p class="service-indicator" data-service-state>Проверка сервиса…</p><a href="/operator" data-operator-link>Доступ оператора</a></div>

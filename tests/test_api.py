@@ -31,6 +31,8 @@ async def test_api_contract_and_error_states(system, source):
         job_id = created.json()["job_id"]
         status = await client.get(f"/api/v1/mappings/{job_id}", headers=headers)
         assert set(status.json()) == {
+            "progress",
+            "reused",
             "job_id",
             "kind",
             "status",

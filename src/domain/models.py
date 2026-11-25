@@ -13,7 +13,7 @@ from typing import Any
 LEGACY_SOURCE_FIELDS = ("Caption", "Units", "Quantity", "UserComment1", "Pages")
 SOURCE_FIELDS = (*LEGACY_SOURCE_FIELDS, "Brand", "Article", "Note")
 ALGORITHM_VERSION = "technical-baseline-v3-explicit-attributes"
-TERMINAL = {"ready_for_review", "complete", "failed", "approved"}
+TERMINAL = {"ready_for_review", "complete", "failed", "approved", "cancelled"}
 
 
 def ensure_approvable(state: str, rows: list[dict]) -> None:

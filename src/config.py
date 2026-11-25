@@ -101,6 +101,23 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: int = Field(900, ge=1, le=3300)
     http_timeout_seconds: int = Field(30, ge=1, le=120)
     max_pdf_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    invoice_max_files: int = Field(10, ge=1, le=10)
+    invoice_max_file_bytes: int = Field(50 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    invoice_max_batch_bytes: int = Field(100 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    invoice_max_selected_pages: int = Field(100, ge=1, le=100)
+    invoice_max_items: int = Field(20000, ge=1, le=20000)
+    invoice_upstream_timeout_seconds: int = Field(3300, ge=1, le=3300)
+    job_active_limit: int = Field(32, ge=2, le=1000)
+    job_queued_limit: int = Field(24, ge=1, le=1000)
+    job_owner_active_limit: int = Field(8, ge=1, le=1000)
+    job_temporary_bytes_limit: int = Field(2 * 1024**3, ge=100 * 1024**2, le=64 * 1024**3)
+    job_admission_retry_after: int = Field(30, ge=1, le=300)
+    delivery_publish_timeout: float = Field(8, ge=1, le=30)
+    delivery_reservation_seconds: int = Field(20, ge=10, le=120)
+    lifecycle_event_limit: int = Field(200, ge=20, le=1000)
+    lifecycle_sse_per_owner: int = Field(4, ge=1, le=16)
+    lifecycle_sse_total: int = Field(64, ge=4, le=512)
+    lifecycle_sse_seconds: int = Field(120, ge=30, le=600)
     max_result_bytes: int = Field(15000000, ge=1024, le=50000000)
     max_xml_bytes: int = Field(200000000, ge=1024)
     max_items: int = Field(10000, ge=1, le=50000)
@@ -124,6 +141,15 @@ class Settings(BaseSettings):
         """Запрещает молчаливое использование неизвестной политики дубликатов и порта upstream."""
         if self.duplicate_code_policy not in {"reject", "quarantine"}:
             raise ValueError("duplicate_code_policy: reject или quarantine")
+        if self.invoice_max_file_bytes > self.invoice_max_batch_bytes:
+            raise ValueError("Размер invoice-файла не может превышать лимит пакета")
+        if self.delivery_reservation_seconds <= self.delivery_publish_timeout + 2:
+            raise ValueError("Delivery reservation должна превышать publish timeout с запасом")
+        if (
+            self.job_owner_active_limit > self.job_active_limit
+            or self.job_queued_limit > self.job_active_limit
+        ):
+            raise ValueError("Лимит owner/queued не может превышать общий active limit")
         if self.onec_catalog_response_format not in {"json", "xml"}:
             raise ValueError("ONEC_CATALOG_RESPONSE_FORMAT: json или xml")
         webhook = self.onec_catalog_webhook_key.get_secret_value()

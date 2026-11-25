@@ -361,10 +361,10 @@ async def test_configured_http_startup_without_xml_and_unchanged_keys(
     monkeypatch.setattr(cli, "build_container", lambda _: container)
     published = []
 
-    async def publish(job_id):
+    async def publish(job_id, generation=None):
         """Доставляет настоящий outbox в processor без mock успешного terminal ответа."""
         published.append(job_id)
-        await container.processor.process(job_id)
+        await container.processor.process(job_id, delivery_generation=generation)
 
     monkeypatch.setattr(container.broker, "publish", publish)
     before = container.settings.onec_catalog_webhook_key.get_secret_value()

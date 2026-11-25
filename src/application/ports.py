@@ -14,13 +14,24 @@ class JobRepository(Protocol):
     """Контракт долговечных заданий с изоляцией владельцев и fencing токенами."""
 
     async def create(
-        self, owner: str, key: str, payload: dict, kind: str, *, pdf: bytes | None = None
+        self,
+        owner: str,
+        key: str,
+        payload: dict,
+        kind: str,
+        *,
+        pdf: bytes | None = None,
+        uploads: list[bytes] | None = None,
     ) -> dict:
         """Атомарно сохраняет задание и outbox либо возвращает идемпотентный ответ."""
         ...
 
     async def pdf(self, job_id: str) -> bytes:
         """Возвращает сохранённый PDF внутреннему worker с проверкой TTL."""
+        ...
+
+    async def invoice_files(self, job_id: str) -> list[bytes]:
+        """Возвращает упорядоченный пакет worker после проверки общего TTL."""
         ...
 
     async def get(self, job_id: str, owner: str | None = None) -> dict:
@@ -31,7 +42,7 @@ class JobRepository(Protocol):
         """Возвращает только неистёкшие задания текущего владельца."""
         ...
 
-    async def claim(self, job_id: str) -> dict | None:
+    async def claim(self, job_id: str, generation: int | None = None) -> dict | None:
         """Атомарно выдаёт lease; повторная доставка не начинает второй worker."""
         ...
 
@@ -47,8 +58,42 @@ class JobRepository(Protocol):
         """Читает ограниченную пачку outbox и восстанавливает просроченные lease."""
         ...
 
-    async def dispatched(self, job_id: str) -> None:
-        """Отмечает подтверждённую брокером публикацию для ограниченного redelivery."""
+    async def reserve_delivery(self) -> dict | None:
+        """Резервирует один transport attempt и восстанавливает доказанно оборванный lease."""
+        ...
+
+    async def confirm_delivery(self, attempt: dict) -> bool:
+        """Подтверждает только зарезервированный token/generation без потери receipt."""
+        ...
+
+    async def delivery_failure(self, attempt: dict, code: str) -> bool:
+        """Сохраняет bounded backoff, не меняя бизнес-бюджет задания."""
+        ...
+
+    async def still_running(self, job_id: str, token: str) -> bool:
+        """Проверяет актуальность обработки перед следующей внешней операцией."""
+        ...
+
+    async def submission_accepted(self, job_id: str, operation: str, upstream_id: str) -> bool:
+        """Сохраняет late response управляемого POST даже после принятия cancel."""
+        ...
+
+    async def lifecycle_view(self, owner: str, job_id: str) -> dict:
+        """Читает безопасные metadata своего неистёкшего задания."""
+        ...
+
+    async def history_page(
+        self, owner: str, profile: str, offset: int, limit: int, state: str = ""
+    ) -> dict:
+        """Возвращает ограниченную страницу серверной истории профиля."""
+        ...
+
+    async def lifecycle_events(self, owner: str, job_id: str, after: int) -> list[dict]:
+        """Воспроизводит только bounded journal Mapper после cursor."""
+        ...
+
+    async def cancel(self, owner: str, job_id: str) -> dict:
+        """Атомарно отменяет или сохраняет durable обязанность отмены upstream."""
         ...
 
     async def select(
